@@ -1,5 +1,7 @@
-//! Per-platform window tweaks for the popup. Everything here is best effort.
+//! Per-platform pieces: window tweaks for the popup, launch at sign-in,
+//! notification sound and the single-instance guard. Best effort throughout.
 
+use futures::Stream;
 use iced::window::Window;
 
 /// Whether the desktop behind the panel is blurred (otherwise the panel is
@@ -30,6 +32,14 @@ pub fn apply_glass(window: &dyn Window, inset: f32, radius: f32) {
 
 #[cfg(not(windows))]
 pub fn apply_glass(_: &dyn Window, _: f32, _: f32) {}
+
+/// Drops the background blur, e.g. while the popup fades out.
+pub fn clear_blur(window: &dyn Window) {
+    #[cfg(windows)]
+    let _ = window_vibrancy::clear_blur(window);
+    #[cfg(not(windows))]
+    let _ = window;
+}
 
 /// Shows a hidden window without taking keyboard focus from the user's current app.
 #[cfg(windows)]
@@ -68,4 +78,185 @@ pub fn prepare_env() {
             std::env::remove_var("WAYLAND_DISPLAY");
         }
     }
+}
+
+/// Plays the desktop's "new notification" sound without blocking.
+pub fn play_notification_sound() {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ALIAS, SND_ASYNC, SND_NODEFAULT};
+        let alias = wide("Notification.Default");
+        // SAFETY: `alias` is a NUL-terminated UTF-16 string that outlives the call;
+        // SND_ASYNC copies what it needs.
+        unsafe { PlaySoundW(alias.as_ptr(), std::ptr::null_mut(), SND_ALIAS | SND_ASYNC | SND_NODEFAULT) };
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // freedesktop sound theme, via libcanberra or PulseAudio/PipeWire's paplay.
+        let played = std::process::Command::new("canberra-gtk-play").args(["-i", "message-new-instant"]).spawn();
+        if played.is_err() {
+            let _ = std::process::Command::new("paplay")
+                .arg("/usr/share/sounds/freedesktop/stereo/message-new-instant.oga")
+                .spawn();
+        }
+    }
+}
+
+#[cfg(windows)]
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(Some(0)).collect()
+}
+
+#[cfg(windows)]
+mod startup {
+    use super::wide;
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{
+        HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW,
+    };
+
+    // The installer's "start at sign-in" option writes the same value.
+    const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+    const VALUE: &str = "TinyTodo";
+
+    pub fn enabled() -> bool {
+        let (key, value) = (wide(RUN_KEY), wide(VALUE));
+        // SAFETY: valid NUL-terminated strings; null output pointers just test for existence.
+        let status = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                key.as_ptr(),
+                value.as_ptr(),
+                RRF_RT_REG_SZ,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        status == ERROR_SUCCESS
+    }
+
+    pub fn set(on: bool) -> Result<(), String> {
+        let (key, value) = (wide(RUN_KEY), wide(VALUE));
+        let status = if on {
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let command = wide(&format!("\"{}\"", exe.display()));
+            // SAFETY: valid NUL-terminated strings; the size covers `command` including its NUL.
+            unsafe {
+                RegSetKeyValueW(
+                    HKEY_CURRENT_USER,
+                    key.as_ptr(),
+                    value.as_ptr(),
+                    REG_SZ,
+                    command.as_ptr().cast(),
+                    (command.len() * 2) as u32,
+                )
+            }
+        } else {
+            // SAFETY: valid NUL-terminated strings.
+            match unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), value.as_ptr()) } {
+                windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND => ERROR_SUCCESS,
+                status => status,
+            }
+        };
+        if status == ERROR_SUCCESS { Ok(()) } else { Err(format!("registry error {status}")) }
+    }
+}
+
+#[cfg(not(windows))]
+mod startup {
+    use std::path::PathBuf;
+
+    fn entry() -> Option<PathBuf> {
+        Some(dirs::config_dir()?.join("autostart").join("tinytodo.desktop"))
+    }
+
+    pub fn enabled() -> bool {
+        entry().is_some_and(|p| p.exists())
+    }
+
+    pub fn set(on: bool) -> Result<(), String> {
+        let path = entry().ok_or("no config directory")?;
+        if !on {
+            return match std::fs::remove_file(&path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+                _ => Ok(()),
+            };
+        }
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let desktop = format!(
+            "[Desktop Entry]\nType=Application\nName=TinyTodo\nExec=\"{}\"\nX-GNOME-Autostart-enabled=true\n",
+            exe.display()
+        );
+        std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+        std::fs::write(path, desktop).map_err(|e| e.to_string())
+    }
+}
+
+/// Whether TinyTodo starts when the user signs in.
+pub fn launches_at_sign_in() -> bool {
+    startup::enabled()
+}
+
+pub fn set_launch_at_sign_in(on: bool) -> Result<(), String> {
+    startup::set(on)
+}
+
+/// Makes this the only running TinyTodo. Returns false if one is already
+/// running, after asking it to show itself.
+#[cfg(windows)]
+pub fn claim_single_instance() -> bool {
+    use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+    use windows_sys::Win32::System::Threading::{CreateEventW, CreateMutexW, EVENT_MODIFY_STATE, OpenEventW, SetEvent};
+    let (mutex, event) = (wide(instance::MUTEX), wide(instance::EVENT));
+    // SAFETY: valid NUL-terminated names; handles are intentionally kept for the process lifetime.
+    unsafe {
+        CreateMutexW(std::ptr::null(), 0, mutex.as_ptr());
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            let other = OpenEventW(EVENT_MODIFY_STATE, 0, event.as_ptr());
+            if !other.is_null() {
+                SetEvent(other);
+            }
+            return false;
+        }
+        let handle = CreateEventW(std::ptr::null(), 0, 0, event.as_ptr());
+        instance::EVENT_HANDLE.store(handle as usize, std::sync::atomic::Ordering::Relaxed);
+    }
+    true
+}
+
+#[cfg(not(windows))]
+pub fn claim_single_instance() -> bool {
+    true
+}
+
+#[cfg(windows)]
+mod instance {
+    /// The installer checks for this mutex (`AppMutex`) too.
+    pub const MUTEX: &str = "TinyTodo.Instance";
+    pub const EVENT: &str = "TinyTodo.Activate";
+    pub static EVENT_HANDLE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+}
+
+/// Requests from later launches (e.g. the Start Menu shortcut) to show the app.
+pub fn activations() -> impl Stream<Item = ()> {
+    let (tx, rx) = futures::channel::mpsc::unbounded();
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Threading::{INFINITE, WaitForSingleObject};
+        let handle = instance::EVENT_HANDLE.load(std::sync::atomic::Ordering::Relaxed);
+        if handle != 0 {
+            std::thread::spawn(move || {
+                // SAFETY: the event handle stays open for the life of the process.
+                while unsafe { WaitForSingleObject(handle as _, INFINITE) } == 0 {
+                    if tx.unbounded_send(()).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    }
+    #[cfg(not(windows))]
+    drop(tx);
+    rx
 }

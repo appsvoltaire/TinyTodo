@@ -126,6 +126,12 @@ impl Client {
         serde_json::from_value(r["message"].clone()).map_err(|e| format!("chat.postMessage: {e}"))
     }
 
+    /// Verifies both tokens with Slack without changing anything.
+    pub async fn check(&self) -> Result<(), String> {
+        self.bot("auth.test", &[]).await.map_err(|e| format!("bot token: {e}"))?;
+        self.socket_url().await.map(drop).map_err(|e| format!("app token: {e}"))
+    }
+
     async fn socket_url(&self) -> Result<String, String> {
         let r = self.call("apps.connections.open", &self.tokens.app, &[]).await?;
         let url = r["url"].as_str().ok_or("apps.connections.open: no url")?.to_string();

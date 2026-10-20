@@ -1,32 +1,33 @@
-//! The popup / conversation window: one small always-on-top glass panel in the
-//! top-right corner, opened when the assistant writes or from the tray.
+//! Windows and app state: the glass popup / conversation panel in the top-right
+//! corner, and a small settings window, both reachable from the tray.
 
-use crate::config::Config;
+use crate::config::{self, Config};
 use crate::platform;
 use crate::policy;
 use crate::slack::{self, Feed, Message, Session};
+use crate::style::{Palette, SEMIBOLD};
 use crate::tray;
-use iced::widget::{button, column, container, mouse_area, operation, row, scrollable, space, stack, text, text_input};
-use iced::{
-    Background, Border, Center, Color, Element, Fill, Font, Point, Radians, Shadow, Size, Subscription, Task, Vector,
-    event, font, gradient, keyboard, window,
-};
-use std::time::Duration;
+use iced::widget::{column, container, mouse_area, operation, row, slider, space, stack, text, text_input, toggler};
+use iced::{Center, Color, Element, Fill, Point, Size, Subscription, Task, Theme, event, keyboard, mouse, window};
+use std::time::{Duration, Instant};
 
 const WIDTH: f32 = 400.0;
 /// Transparent margin around the panel so its shadow isn't clipped.
 const GUTTER: f32 = 10.0;
-const RADIUS: f32 = 22.0;
 const SCREEN_MARGIN: f32 = 6.0;
 const CONVERSATION_HEIGHT: f32 = 560.0;
+const MIN_HEIGHT: f32 = 170.0;
 const MAX_POPUP_BODY: f32 = 300.0;
+const MESSAGE_GAP: f32 = 20.0;
 /// Most messages kept in memory, both in the conversation view and in the popup.
 const MAX_MESSAGES: usize = 10;
+const FADE_DURATION: Duration = Duration::from_millis(700);
 const INPUT: &str = "reply";
 
 pub fn run(cfg: Config, feed: Result<Feed, String>) -> iced::Result {
     iced::daemon(move || App::boot(cfg.clone(), feed.clone()), App::update, App::view)
-        .title(|_: &App, _| "TinyTodo".to_string())
+        .title(App::title)
+        .theme(|app: &App, _| app.theme.clone())
         .subscription(App::subscription)
         .style(|_, _| iced::theme::Style { background_color: Color::TRANSPARENT, text_color: Color::BLACK })
         .run()
@@ -51,7 +52,8 @@ struct App {
     session: Option<Session>,
     status: Status,
     tray: Option<tray_icon::TrayIcon>,
-    window: Option<window::Id>,
+    popup: Option<window::Id>,
+    settings: Option<window::Id>,
     activate_on_open: bool,
     mode: Mode,
     unread: Vec<Message>,
@@ -59,27 +61,51 @@ struct App {
     draft: String,
     sending: bool,
     error: Option<String>,
-    /// The user has touched the popup, so it won't auto-hide.
-    engaged: bool,
-    hide_generation: u64,
+    /// The pointer is over the popup; it never fades while hovered.
+    hovered: bool,
+    /// The user resized the popup; keep their size until it closes.
+    user_sized: bool,
+    fade_generation: u64,
+    fading_since: Option<Instant>,
+    /// Popup opacity while fading out, 1.0 otherwise.
+    fade: f32,
     dark: bool,
+    theme: Theme,
+    launch_at_sign_in: bool,
+    settings_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 enum Msg {
     Slack(slack::Event),
     Tray(tray::Action),
+    /// Another launch asked us to show ourselves.
+    Activate,
     ThemeMode(iced::theme::Mode),
-    WindowOpened(window::Id),
+    PopupOpened(window::Id),
+    SettingsOpened(window::Id),
     WindowClosed(window::Id),
+    Close(window::Id),
+    Resized(window::Id),
     Draft(String),
-    Engage,
+    Hover(bool),
+    /// A click, scroll or key press in a window.
+    Interacted(window::Id),
+    StartResize,
     Send,
     Sent(Result<Message, String>),
     ShowHistory,
     History(Result<Vec<Message>, String>),
     Dismiss,
-    AutoHide(u64),
+    FadeDue(u64),
+    FadeFrame(Instant),
+    SetEnabled(bool),
+    SetFadeSeconds(f32),
+    SetSound(bool),
+    SetTransparency(f32),
+    SetLaunchAtSignIn(bool),
+    SaveSettings,
+    TestNotification,
 }
 
 impl App {
@@ -95,7 +121,8 @@ impl App {
             session: None,
             status: Status::Connecting,
             tray,
-            window: None,
+            popup: None,
+            settings: None,
             activate_on_open: false,
             mode: Mode::Popup,
             unread: Vec::new(),
@@ -103,25 +130,39 @@ impl App {
             draft: String::new(),
             sending: false,
             error,
-            engaged: false,
-            hide_generation: 0,
+            hovered: false,
+            user_sized: false,
+            fade_generation: 0,
+            fading_since: None,
+            fade: 1.0,
             dark: true,
+            theme: crate::style::theme(true),
+            launch_at_sign_in: false,
+            settings_error: None,
         };
         let theme = iced::system::theme().map(Msg::ThemeMode);
         let startup = if app.error.is_some() { app.show(Mode::Popup, false) } else { Task::none() };
         (app, Task::batch([theme, startup]))
     }
 
+    fn title(&self, window: window::Id) -> String {
+        if self.settings == Some(window) { "TinyTodo Settings".into() } else { "TinyTodo".into() }
+    }
+
     fn update(&mut self, msg: Msg) -> Task<Msg> {
         match msg {
             Msg::Slack(event) => return self.on_slack(event),
-            Msg::Tray(tray::Action::Open) => return self.open_conversation(),
+            Msg::Tray(tray::Action::Open) | Msg::Activate | Msg::ShowHistory => return self.open_conversation(),
+            Msg::Tray(tray::Action::Settings) => return self.open_settings(),
             Msg::Tray(tray::Action::Quit) => return iced::exit(),
-            Msg::ThemeMode(mode) => self.dark = mode != iced::theme::Mode::Light,
-            Msg::WindowOpened(id) => {
+            Msg::ThemeMode(mode) => {
+                self.dark = mode != iced::theme::Mode::Light;
+                self.theme = crate::style::theme(self.dark);
+            }
+            Msg::PopupOpened(id) => {
                 let activate = self.activate_on_open;
                 let prepare = window::run(id, move |w| {
-                    platform::apply_glass(w, GUTTER, RADIUS);
+                    platform::apply_glass(w, GUTTER, crate::style::RADIUS);
                     if !activate {
                         platform::show_without_activating(w);
                     }
@@ -133,22 +174,53 @@ impl App {
                 };
                 return Task::batch([prepare.discard(), focus]);
             }
+            Msg::SettingsOpened(id) => return window::gain_focus(id),
             Msg::WindowClosed(id) => {
-                if self.window == Some(id) {
-                    self.window = None;
+                if self.popup == Some(id) {
+                    self.popup = None;
+                }
+                if self.settings == Some(id) {
+                    self.settings = None;
+                }
+            }
+            Msg::Close(id) => {
+                if self.settings == Some(id) {
+                    self.settings = None;
+                    return window::close(id);
+                }
+                return self.hide();
+            }
+            Msg::Resized(id) => {
+                // The rounded blur region has to follow the window's size.
+                if self.popup == Some(id) && self.fading_since.is_none() {
+                    return window::run(id, |w| platform::apply_glass(w, GUTTER, crate::style::RADIUS)).discard();
                 }
             }
             Msg::Draft(draft) => {
                 self.draft = draft;
-                self.engaged = true;
+                return self.restart_fade();
             }
-            Msg::Engage => self.engaged = true,
+            Msg::Hover(hovered) => {
+                self.hovered = hovered;
+                return if hovered { self.cancel_fade() } else { self.restart_fade() };
+            }
+            Msg::Interacted(id) => {
+                if self.popup == Some(id) {
+                    return self.restart_fade();
+                }
+            }
+            Msg::StartResize => {
+                if let Some(id) = self.popup {
+                    self.user_sized = true;
+                    return window::drag_resize(id, window::Direction::South);
+                }
+            }
             Msg::Send => return self.send(),
             Msg::Sent(Ok(sent)) => {
                 self.sending = false;
                 self.draft.clear();
                 if self.mode == Mode::Conversation {
-                    self.push_history(sent);
+                    keep_recent(&mut self.history, sent);
                 } else {
                     return self.hide();
                 }
@@ -158,7 +230,6 @@ impl App {
                 self.error = Some(e);
                 return self.resize();
             }
-            Msg::ShowHistory => return self.open_conversation(),
             Msg::History(Ok(history)) => {
                 self.history.clear();
                 for message in history {
@@ -166,10 +237,50 @@ impl App {
                 }
             }
             Msg::Dismiss => return self.hide(),
-            Msg::AutoHide(generation) => {
-                if generation == self.hide_generation && !self.engaged && self.mode == Mode::Popup {
-                    return self.hide();
+            Msg::FadeDue(generation) => {
+                if generation == self.fade_generation && self.may_fade() {
+                    self.fading_since = Some(Instant::now());
+                    if let Some(id) = self.popup {
+                        return window::run(id, platform::clear_blur).discard();
+                    }
                 }
+            }
+            Msg::FadeFrame(now) => {
+                if let Some(since) = self.fading_since {
+                    self.fade = 1.0 - now.duration_since(since).as_secs_f32() / FADE_DURATION.as_secs_f32();
+                    if self.fade <= 0.0 {
+                        return self.hide();
+                    }
+                }
+            }
+            Msg::SetEnabled(on) => {
+                self.cfg.notifications.enabled = on;
+                self.save_settings();
+            }
+            Msg::SetFadeSeconds(secs) => self.cfg.notifications.fade_after_seconds = secs.round() as u64,
+            Msg::SetSound(on) => {
+                self.cfg.notifications.sound = on;
+                self.save_settings();
+                if on {
+                    platform::play_notification_sound();
+                }
+            }
+            Msg::SetTransparency(t) => self.cfg.appearance.transparency = t,
+            Msg::SaveSettings => self.save_settings(),
+            Msg::SetLaunchAtSignIn(on) => match platform::set_launch_at_sign_in(on) {
+                Ok(()) => self.launch_at_sign_in = on,
+                Err(e) => self.settings_error = Some(format!("Couldn't change startup: {e}")),
+            },
+            Msg::TestNotification => {
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+                return self.present(Message {
+                    ts: format!("{}.{:06}", now.as_secs(), now.subsec_micros()),
+                    user: None,
+                    bot_id: None,
+                    text: "This is a test notification. Replies typed here go to Slack.".into(),
+                    subtype: None,
+                    hidden: false,
+                });
             }
         }
         Task::none()
@@ -183,7 +294,13 @@ impl App {
                 eprintln!("tinytodo: disconnected: {reason}");
                 self.set_status(Status::Offline(reason));
             }
-            slack::Event::Notify(message) => return self.notify(message),
+            slack::Event::Notify(message) => {
+                if self.popup.is_some() && self.mode == Mode::Conversation {
+                    keep_recent(&mut self.history, message);
+                } else if self.cfg.notifications.enabled {
+                    return self.present(message);
+                }
+            }
         }
         Task::none()
     }
@@ -200,29 +317,59 @@ impl App {
         self.status = status;
     }
 
-    fn notify(&mut self, message: Message) -> Task<Msg> {
-        if self.window.is_some() && self.mode == Mode::Conversation {
-            self.push_history(message);
-            return Task::none();
-        }
-        if !self.cfg.notifications.enabled {
-            return Task::none();
-        }
+    /// Shows `message` in the popup (with sound, if enabled) and restarts the fade timer.
+    fn present(&mut self, message: Message) -> Task<Msg> {
         keep_recent(&mut self.unread, message);
-        let show = self.show(Mode::Popup, false);
-        let secs = self.cfg.notifications.auto_hide_seconds;
-        if secs == 0 {
-            return show;
+        if self.cfg.notifications.sound {
+            platform::play_notification_sound();
         }
-        self.hide_generation += 1;
-        let generation = self.hide_generation;
-        let timer = Task::perform(tokio::time::sleep(Duration::from_secs(secs)), move |()| Msg::AutoHide(generation));
-        Task::batch([show, timer])
+        let restore = self.cancel_fade();
+        let show = self.show(Mode::Popup, false);
+        Task::batch([restore, show, self.schedule_fade()])
+    }
+
+    fn may_fade(&self) -> bool {
+        self.popup.is_some()
+            && self.mode == Mode::Popup
+            && self.cfg.notifications.fade_after_seconds > 0
+            && !self.hovered
+            && !self.sending
+            && self.error.is_none()
+    }
+
+    fn schedule_fade(&mut self) -> Task<Msg> {
+        self.fade_generation += 1;
+        if !self.may_fade() {
+            return Task::none();
+        }
+        let generation = self.fade_generation;
+        let delay = Duration::from_secs(self.cfg.notifications.fade_after_seconds);
+        Task::perform(tokio::time::sleep(delay), move |()| Msg::FadeDue(generation))
+    }
+
+    /// Any interaction starts the countdown over (and stops a fade in progress).
+    fn restart_fade(&mut self) -> Task<Msg> {
+        let restore = self.cancel_fade();
+        Task::batch([restore, self.schedule_fade()])
+    }
+
+    /// Stops a fade in progress and brings the glass back.
+    fn cancel_fade(&mut self) -> Task<Msg> {
+        self.fade_generation += 1;
+        self.fade = 1.0;
+        match (self.fading_since.take(), self.popup) {
+            (Some(_), Some(id)) => {
+                window::run(id, |w| platform::apply_glass(w, GUTTER, crate::style::RADIUS)).discard()
+            }
+            _ => Task::none(),
+        }
     }
 
     fn open_conversation(&mut self) -> Task<Msg> {
         self.unread.clear();
         self.error = None;
+        self.user_sized = false;
+        let restore = self.cancel_fade();
         let fetch = match &self.session {
             Some(s) => {
                 let (client, channel) = (s.client.clone(), s.channel.clone());
@@ -233,7 +380,30 @@ impl App {
                 Task::none()
             }
         };
-        Task::batch([self.show(Mode::Conversation, true), fetch])
+        Task::batch([restore, self.show(Mode::Conversation, true), fetch])
+    }
+
+    fn open_settings(&mut self) -> Task<Msg> {
+        if let Some(id) = self.settings {
+            return window::gain_focus(id);
+        }
+        self.launch_at_sign_in = platform::launches_at_sign_in();
+        self.settings_error = None;
+        let (id, open) = window::open(window::Settings {
+            size: Size::new(400.0, 450.0),
+            position: window::Position::Centered,
+            resizable: false,
+            minimizable: false,
+            exit_on_close_request: false,
+            icon: window::icon::from_rgba(tray::icon_rgba(64), 64, 64).ok(),
+            ..Default::default()
+        });
+        self.settings = Some(id);
+        open.map(Msg::SettingsOpened)
+    }
+
+    fn save_settings(&mut self) {
+        self.settings_error = self.cfg.save().err().map(|e| format!("Couldn't save settings: {e}"));
     }
 
     fn send(&mut self) -> Task<Msg> {
@@ -246,20 +416,18 @@ impl App {
             return self.resize();
         };
         self.sending = true;
-        self.engaged = true;
         self.error = None;
         let (client, channel) = (session.client.clone(), session.channel.clone());
         Task::perform(async move { client.post(&channel, &text).await }, Msg::Sent)
     }
 
-    fn push_history(&mut self, message: Message) {
-        keep_recent(&mut self.history, message);
-    }
-
-    /// Opens the window (or adapts the open one) for `mode`.
+    /// Opens the popup window (or adapts the open one) for `mode`.
     fn show(&mut self, mode: Mode, activate: bool) -> Task<Msg> {
+        if self.mode != mode {
+            self.user_sized = false;
+        }
         self.mode = mode;
-        if let Some(id) = self.window {
+        if let Some(id) = self.popup {
             let resize = self.resize();
             return if activate {
                 Task::batch([resize, window::gain_focus(id), operation::focus(INPUT)])
@@ -267,16 +435,19 @@ impl App {
                 resize
             };
         }
-        self.engaged = activate;
         self.activate_on_open = activate;
+        self.hovered = false;
         let (id, open) = window::open(window::Settings {
             size: Size::new(WIDTH, self.height()),
+            min_size: Some(Size::new(WIDTH, MIN_HEIGHT)),
+            max_size: Some(Size::new(WIDTH, 2000.0)),
             position: window::Position::SpecificWith(|win, screen| {
                 Point::new(screen.width - win.width - SCREEN_MARGIN, SCREEN_MARGIN)
             }),
             // On Windows a popup is shown later without taking focus; see `show_without_activating`.
             visible: activate || cfg!(not(windows)),
-            resizable: false,
+            // Needed for the resize grip; the width is pinned by min/max size.
+            resizable: true,
             decorations: false,
             transparent: true,
             level: window::Level::AlwaysOnTop,
@@ -284,15 +455,14 @@ impl App {
             platform_specific: platform_settings(),
             ..Default::default()
         });
-        self.window = Some(id);
-        open.map(Msg::WindowOpened)
+        self.popup = Some(id);
+        open.map(Msg::PopupOpened)
     }
 
     fn resize(&self) -> Task<Msg> {
-        match self.window {
-            Some(id) => window::resize(id, Size::new(WIDTH, self.height()))
-                .chain(window::run(id, |w| platform::apply_glass(w, GUTTER, RADIUS)).discard()),
-            None => Task::none(),
+        match self.popup {
+            Some(id) if !self.user_sized => window::resize(id, Size::new(WIDTH, self.height())),
+            _ => Task::none(),
         }
     }
 
@@ -300,21 +470,29 @@ impl App {
         self.unread.clear();
         self.error = None;
         self.mode = Mode::Popup;
-        self.hide_generation += 1;
-        match self.window.take() {
+        self.user_sized = false;
+        self.hovered = false;
+        self.fade_generation += 1;
+        self.fading_since = None;
+        self.fade = 1.0;
+        match self.popup.take() {
             Some(id) => window::close(id),
             None => Task::none(),
         }
     }
 
+    /// Popup height: just enough for the newest message; older ones are a scroll away.
     fn height(&self) -> f32 {
         match self.mode {
             Mode::Conversation => CONVERSATION_HEIGHT,
             Mode::Popup => {
-                let texts = self.unread.iter().map(|m| slack::plain_text(&m.text));
-                let body = texts.chain(self.error.clone()).map(|t| estimate_text_height(&t) + 12.0).sum::<f32>();
+                let latest = self.unread.last().map(|m| slack::plain_text(&m.text));
+                let texts: Vec<_> = latest.into_iter().chain(self.error.clone()).collect();
+                let body = texts.iter().map(|t| estimate_text_height(t)).sum::<f32>()
+                    + MESSAGE_GAP * texts.len().saturating_sub(1) as f32;
                 // Gutters, panel padding, header, input, buttons and the gaps between them.
-                2.0 * GUTTER + 32.0 + 20.0 + 40.0 + 32.0 + 3.0 * 12.0 + body.clamp(20.0, MAX_POPUP_BODY)
+                let chrome = 2.0 * GUTTER + 32.0 + 20.0 + 40.0 + 32.0 + 3.0 * 12.0;
+                (chrome + body.clamp(20.0, MAX_POPUP_BODY)).max(MIN_HEIGHT)
             }
         }
     }
@@ -322,53 +500,76 @@ impl App {
     fn subscription(&self) -> Subscription<Msg> {
         let mut subscriptions = vec![
             Subscription::run(tray::actions).map(Msg::Tray),
-            window::close_requests().map(|_| Msg::Dismiss),
+            Subscription::run(platform::activations).map(|()| Msg::Activate),
+            window::close_requests().map(Msg::Close),
             window::close_events().map(Msg::WindowClosed),
+            window::resize_events().map(|(id, _)| Msg::Resized(id)),
             iced::system::theme_changes().map(Msg::ThemeMode),
-            event::listen_with(|event, _, _| match event {
+            event::listen_with(|event, _, id| match event {
                 iced::Event::Keyboard(keyboard::Event::KeyPressed {
                     key: keyboard::Key::Named(keyboard::key::Named::Escape),
                     ..
-                }) => Some(Msg::Dismiss),
+                }) => Some(Msg::Close(id)),
+                iced::Event::Keyboard(keyboard::Event::KeyPressed { .. })
+                | iced::Event::Mouse(mouse::Event::ButtonPressed(_) | mouse::Event::WheelScrolled { .. }) => {
+                    Some(Msg::Interacted(id))
+                }
                 _ => None,
             }),
         ];
+        if self.fading_since.is_some() {
+            subscriptions.push(window::frames().map(Msg::FadeFrame));
+        }
         if let Some(feed) = &self.feed {
             subscriptions.push(Subscription::run_with(feed.clone(), Feed::stream).map(Msg::Slack));
         }
         Subscription::batch(subscriptions)
     }
 
-    fn view(&self, _window: window::Id) -> Element<'_, Msg> {
-        let p = Palette::new(self.dark);
+    fn view(&self, window: window::Id) -> Element<'_, Msg> {
+        if self.settings == Some(window) {
+            return self.settings_view();
+        }
+        let p = Palette::new(self.dark, self.cfg.appearance.transparency, self.fade.clamp(0.0, 1.0));
         let content = match self.mode {
-            Mode::Popup => self.popup(p),
-            Mode::Conversation => self.conversation(p),
+            Mode::Popup => self.popup_view(p),
+            Mode::Conversation => self.conversation_view(p),
         };
+        let grip = mouse_area(container(container(space()).width(36).height(4).style(move |_| p.grip())).padding(6))
+            .on_press(Msg::StartResize)
+            .interaction(mouse::Interaction::ResizingVertically);
         let glass = stack![
             container(space()).width(Fill).height(Fill).style(move |_| p.glass()),
             container(space()).width(Fill).height(Fill).style(move |_| p.sheen()),
             container(content).padding(16).width(Fill).height(Fill),
+            container(grip).center_x(Fill).align_bottom(Fill),
         ];
-        container(mouse_area(glass).on_enter(Msg::Engage)).padding(GUTTER).into()
+        container(mouse_area(glass).on_enter(Msg::Hover(true)).on_exit(Msg::Hover(false))).padding(GUTTER).into()
     }
 
-    fn popup(&self, p: Palette) -> Element<'_, Msg> {
+    fn online(&self) -> Option<bool> {
+        match self.status {
+            Status::Connecting => None,
+            Status::Online => Some(true),
+            Status::Offline(_) => Some(false),
+        }
+    }
+
+    fn popup_view(&self, p: Palette) -> Element<'_, Msg> {
         let (title, time) = match self.unread.last() {
             Some(latest) => ("Assistant", time_label(&latest.ts)),
             None => ("TinyTodo", String::new()),
         };
-        let count = (self.unread.len() > 1).then(|| text(format!("{} new", self.unread.len())).size(11).color(p.dim));
-        let header = row![p.status_dot(&self.status), text(title).size(13).font(SEMIBOLD).color(p.text)]
+        // Older unread messages sit above the newest one, a scroll away.
+        let count = (self.unread.len() > 1).then(|| text(format!("{} new ↑", self.unread.len())).size(11).color(p.dim));
+        let header = row![p.status_dot(self.online()), text(title).size(13).font(SEMIBOLD).color(p.text)]
             .push(text(time).size(12).color(p.dim))
             .push(count)
-            .push(space::horizontal())
-            .push(p.close_button())
             .spacing(8)
             .align_y(Center);
         let messages =
             column(self.unread.iter().map(|m| text(slack::plain_text(&m.text)).size(14).color(p.text).into()))
-                .spacing(12)
+                .spacing(MESSAGE_GAP)
                 .push(self.error.as_ref().map(|e| text(e).size(12).color(p.error)));
         let reply_ready = !self.sending && !self.draft.trim().is_empty() && self.session.is_some();
         let actions = row![
@@ -381,18 +582,16 @@ impl App {
         column![header, p.scroll(messages), self.input(p), actions].spacing(12).into()
     }
 
-    fn conversation(&self, p: Palette) -> Element<'_, Msg> {
+    fn conversation_view(&self, p: Palette) -> Element<'_, Msg> {
         let status = match &self.status {
             Status::Connecting => "Connecting…",
             Status::Online => "Connected",
             Status::Offline(_) => "Reconnecting…",
         };
         let header = row![
-            p.status_dot(&self.status),
+            p.status_dot(self.online()),
             text("Conversation").size(13).font(SEMIBOLD).color(p.text),
             text(status).size(12).color(p.dim),
-            space::horizontal(),
-            p.close_button(),
         ]
         .spacing(8)
         .align_y(Center);
@@ -401,7 +600,7 @@ impl App {
             .history
             .iter()
             .filter(|m| policy::is_conversational(m) && !m.text.trim().is_empty())
-            .map(|m| p.bubble(m, identity.is_some_and(|i| i.is_mine(m))));
+            .map(|m| p.bubble(m, identity.is_some_and(|i| i.is_mine(m)), WIDTH * 0.75, time_label(&m.ts)));
         let list = column(bubbles).spacing(8).push(self.error.as_ref().map(|e| text(e).size(12).color(p.error)));
         let send_ready = !self.sending && !self.draft.trim().is_empty() && self.session.is_some();
         let actions = row![
@@ -423,6 +622,61 @@ impl App {
             .style(move |_, status| p.input(status))
             .into()
     }
+
+    fn settings_view(&self) -> Element<'_, Msg> {
+        let p = Palette::new(self.dark, 0.0, 1.0);
+        let n = &self.cfg.notifications;
+        let section = |title: &'static str, body: Element<'static, Msg>| {
+            column![
+                text(title).size(12).font(SEMIBOLD).color(p.dim),
+                container(body).padding(14).width(Fill).style(move |_| p.card()),
+            ]
+            .spacing(6)
+        };
+        let labelled = |label: &'static str, value: String| {
+            row![text(label).size(14), space::horizontal(), text(value).size(13).color(p.dim)]
+        };
+        let fade = match n.fade_after_seconds {
+            0 => "Never".to_string(),
+            secs => format!("{secs} s"),
+        };
+        let notifications = column![
+            toggler(n.enabled).label("Show popups for new messages").text_size(14).on_toggle(Msg::SetEnabled),
+            toggler(n.sound).label("Play a sound").text_size(14).on_toggle(Msg::SetSound),
+            labelled("Fade out after", fade),
+            slider(0.0..=config::MAX_FADE_SECONDS as f32, n.fade_after_seconds as f32, Msg::SetFadeSeconds)
+                .step(1.0_f32)
+                .on_release(Msg::SaveSettings),
+        ]
+        .spacing(12);
+        let transparency = self.cfg.appearance.transparency;
+        let appearance = column![
+            labelled("Transparency", format!("{:.0}%", transparency * 100.0)),
+            slider(0.0..=config::MAX_TRANSPARENCY, transparency, Msg::SetTransparency)
+                .step(0.01_f32)
+                .on_release(Msg::SaveSettings),
+        ]
+        .spacing(12);
+        let system = toggler(self.launch_at_sign_in)
+            .label("Launch TinyTodo when I sign in")
+            .text_size(14)
+            .on_toggle(Msg::SetLaunchAtSignIn);
+        let actions = row![
+            p.button("Show test notification", Some(Msg::TestNotification), false),
+            space::horizontal(),
+            p.button("Done", self.settings.map(Msg::Close), true),
+        ];
+        let body = column![
+            section("NOTIFICATIONS", notifications.into()),
+            section("APPEARANCE", appearance.into()),
+            section("SYSTEM", system.into()),
+            space::vertical(),
+        ]
+        .push(self.settings_error.as_ref().map(|e| text(e).size(12).color(p.error)))
+        .push(actions)
+        .spacing(16);
+        container(body).padding(20).width(Fill).height(Fill).style(move |_| p.window_background()).into()
+    }
 }
 
 /// Adds `message` in timestamp order, skipping duplicates and keeping only the newest `MAX_MESSAGES`.
@@ -436,11 +690,9 @@ fn keep_recent(list: &mut Vec<Message>, message: Message) {
     list.drain(..excess);
 }
 
-const SEMIBOLD: Font = Font { weight: font::Weight::Semibold, ..Font::DEFAULT };
-
 /// Rough wrapped height of message text at size 14 in the popup's width.
 fn estimate_text_height(text: &str) -> f32 {
-    const CHARS_PER_LINE: usize = 44;
+    const CHARS_PER_LINE: usize = 46;
     let lines: usize = text.lines().map(|l| l.chars().count().div_ceil(CHARS_PER_LINE).max(1)).sum();
     lines.max(1) as f32 * 20.0
 }
@@ -470,216 +722,28 @@ fn platform_settings() -> window::settings::PlatformSpecific {
     Default::default()
 }
 
-/// Colors and styles for the glass look, in a light and a dark variant.
-#[derive(Debug, Clone, Copy)]
-struct Palette {
-    dark: bool,
-    text: Color,
-    dim: Color,
-    error: Color,
-}
-
-const ACCENT: Color = Color::from_rgb(0.04, 0.52, 1.0);
-
-impl Palette {
-    fn new(dark: bool) -> Self {
-        if dark {
-            Self {
-                dark,
-                text: Color::from_rgb(0.96, 0.96, 0.98),
-                dim: Color::from_rgba(0.92, 0.92, 0.96, 0.6),
-                error: Color::from_rgb(1.0, 0.45, 0.42),
-            }
-        } else {
-            Self {
-                dark,
-                text: Color::from_rgb(0.08, 0.08, 0.1),
-                dim: Color::from_rgba(0.1, 0.1, 0.14, 0.55),
-                error: Color::from_rgb(0.8, 0.15, 0.12),
-            }
-        }
-    }
-
-    /// A white overlay at `alpha` in dark mode, a black one in light mode.
-    fn wash(&self, alpha: f32) -> Color {
-        if self.dark { Color::from_rgba(1.0, 1.0, 1.0, alpha) } else { Color::from_rgba(0.0, 0.0, 0.0, alpha * 0.6) }
-    }
-
-    fn rim(&self) -> Color {
-        if self.dark { Color::from_rgba(1.0, 1.0, 1.0, 0.22) } else { Color::from_rgba(1.0, 1.0, 1.0, 0.9) }
-    }
-
-    fn glass(&self) -> container::Style {
-        // With the desktop blurred behind us the tint can be lighter, like real glass.
-        let opacity = if platform::HAS_BLUR { 0.72 } else { 1.0 };
-        let (top, bottom) = if self.dark {
-            (Color::from_rgba(0.24, 0.24, 0.28, 0.80), Color::from_rgba(0.11, 0.11, 0.14, 0.88))
-        } else {
-            (Color::from_rgba(1.0, 1.0, 1.0, 0.86), Color::from_rgba(0.92, 0.93, 0.96, 0.80))
-        };
-        container::Style {
-            background: Some(vertical_gradient(top.scale_alpha(opacity), bottom.scale_alpha(opacity), 1.0)),
-            border: Border { color: self.rim(), width: 1.0, radius: RADIUS.into() },
-            shadow: Shadow {
-                color: Color::from_rgba(0.0, 0.0, 0.0, 0.28),
-                offset: Vector::new(0.0, 3.0),
-                blur_radius: 10.0,
-            },
-            ..Default::default()
-        }
-    }
-
-    /// Specular highlight across the top of the panel.
-    fn sheen(&self) -> container::Style {
-        let alpha = if self.dark { 0.10 } else { 0.5 };
-        container::Style {
-            background: Some(vertical_gradient(Color::from_rgba(1.0, 1.0, 1.0, alpha), Color::TRANSPARENT, 0.4)),
-            border: Border { radius: RADIUS.into(), ..Default::default() },
-            ..Default::default()
-        }
-    }
-
-    fn status_dot<'a>(&self, status: &Status) -> Element<'a, Msg> {
-        let color = match status {
-            Status::Online => Color::from_rgb(0.2, 0.8, 0.4),
-            Status::Connecting => Color::from_rgb(1.0, 0.75, 0.2),
-            Status::Offline(_) => Color::from_rgb(1.0, 0.35, 0.3),
-        };
-        container(space())
-            .width(8)
-            .height(8)
-            .style(move |_| container::Style {
-                background: Some(color.into()),
-                border: Border { radius: 4.0.into(), ..Default::default() },
-                ..Default::default()
-            })
-            .into()
-    }
-
-    fn close_button<'a>(self) -> Element<'a, Msg> {
-        button(text("×").size(16).color(self.dim).center())
-            .width(24)
-            .height(24)
-            .padding(0)
-            .on_press(Msg::Dismiss)
-            .style(move |_, status| button::Style {
-                background: matches!(status, button::Status::Hovered | button::Status::Pressed)
-                    .then(|| self.wash(0.12).into()),
-                border: Border { radius: 12.0.into(), ..Default::default() },
-                ..Default::default()
-            })
-            .into()
-    }
-
-    fn button<'a>(self, label: &'a str, on_press: Option<Msg>, primary: bool) -> Element<'a, Msg> {
-        button(text(label).size(13))
-            .padding([6, 16])
-            .on_press_maybe(on_press)
-            .style(move |_, status| {
-                let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
-                let disabled = status == button::Status::Disabled;
-                let (background, text_color, border) = if primary {
-                    let alpha = if disabled {
-                        0.35
-                    } else if hovered {
-                        0.85
-                    } else {
-                        1.0
-                    };
-                    (ACCENT.scale_alpha(alpha), Color::WHITE, Color::from_rgba(1.0, 1.0, 1.0, 0.25))
-                } else {
-                    (self.wash(if hovered { 0.18 } else { 0.10 }), self.text, self.rim())
-                };
-                button::Style {
-                    background: Some(background.into()),
-                    text_color: if disabled { text_color.scale_alpha(0.7) } else { text_color },
-                    border: Border { color: border, width: 1.0, radius: 999.0.into() },
-                    ..Default::default()
-                }
-            })
-            .into()
-    }
-
-    fn input(&self, status: text_input::Status) -> text_input::Style {
-        let focused = matches!(status, text_input::Status::Focused { .. });
-        text_input::Style {
-            background: self.wash(0.08).into(),
-            border: Border {
-                color: if focused { ACCENT.scale_alpha(0.8) } else { self.rim() },
-                width: 1.0,
-                radius: 12.0.into(),
-            },
-            icon: self.dim,
-            placeholder: self.dim,
-            value: self.text,
-            selection: ACCENT.scale_alpha(0.35),
-        }
-    }
-
-    /// A bottom-anchored list with a slim scrollbar kept clear of the content.
-    fn scroll<'a>(self, content: impl Into<Element<'a, Msg>>) -> Element<'a, Msg> {
-        let bar = scrollable::Scrollbar::new().width(4).scroller_width(4).spacing(6);
-        scrollable(content)
-            .direction(scrollable::Direction::Vertical(bar))
-            .anchor_bottom()
-            .height(Fill)
-            .style(move |theme, status| scrollable::Style {
-                vertical_rail: scrollable::Rail {
-                    background: None,
-                    border: Border::default(),
-                    scroller: scrollable::Scroller {
-                        background: self.wash(0.3).into(),
-                        border: Border { radius: 2.0.into(), ..Default::default() },
-                    },
-                },
-                ..scrollable::default(theme, status)
-            })
-            .into()
-    }
-
-    fn bubble<'a>(self, message: &'a Message, mine: bool) -> Element<'a, Msg> {
-        let who = if mine { "You" } else { "Assistant" };
-        let body = column![
-            text(slack::plain_text(&message.text)).size(14).color(if mine { Color::WHITE } else { self.text }),
-            text(format!("{who} · {}", time_label(&message.ts))).size(11).color(if mine {
-                Color::from_rgba(1.0, 1.0, 1.0, 0.7)
-            } else {
-                self.dim
-            }),
-        ]
-        .spacing(3);
-        let bubble = container(body).padding([8, 12]).max_width(WIDTH * 0.75).style(move |_| container::Style {
-            background: Some(if mine { ACCENT.scale_alpha(0.9).into() } else { self.wash(0.10).into() }),
-            border: Border { color: self.rim(), width: if mine { 0.0 } else { 1.0 }, radius: 16.0.into() },
-            ..Default::default()
-        });
-        if mine { row![space::horizontal(), bubble] } else { row![bubble, space::horizontal()] }.into()
-    }
-}
-
-fn vertical_gradient(top: Color, bottom: Color, end: f32) -> Background {
-    gradient::Linear::new(Radians::PI).add_stop(0.0, top).add_stop(end, bottom).into()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn keeps_only_the_newest_ten_messages() {
-        let message = |ts: u32| Message {
+    fn message(ts: u32, text: &str) -> Message {
+        Message {
             ts: format!("{ts}.000000"),
             user: None,
             bot_id: None,
-            text: ts.to_string(),
+            text: text.into(),
             subtype: None,
             hidden: false,
-        };
+        }
+    }
+
+    #[test]
+    fn keeps_only_the_newest_ten_messages() {
         let mut list = Vec::new();
         for ts in (1..=15).rev() {
-            keep_recent(&mut list, message(ts));
+            keep_recent(&mut list, message(ts, &ts.to_string()));
         }
-        keep_recent(&mut list, message(15));
+        keep_recent(&mut list, message(15, "15"));
         let kept: Vec<_> = list.iter().map(|m| m.text.as_str()).collect();
         assert_eq!(kept, ["6", "7", "8", "9", "10", "11", "12", "13", "14", "15"]);
     }
@@ -688,7 +752,7 @@ mod tests {
     fn text_height_grows_with_wrapping_and_newlines() {
         assert_eq!(estimate_text_height(""), 20.0);
         assert_eq!(estimate_text_height("short"), 20.0);
-        assert_eq!(estimate_text_height(&"x".repeat(45)), 40.0);
+        assert_eq!(estimate_text_height(&"x".repeat(47)), 40.0);
         assert_eq!(estimate_text_height("a\nb\nc"), 60.0);
     }
 
