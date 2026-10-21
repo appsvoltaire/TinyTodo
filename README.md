@@ -23,7 +23,7 @@ twice.
   *Open conversation* in the menu), or by launching TinyTodo again.
 - **Tray menu**: *Open conversation*, *Settings…*, *Quit TinyTodo*. The tooltip
   shows when the app is offline.
-- **Settings**: popups on/off, fade delay, notification sound, glass
+- **Settings**: popups on/off, fade delay, notification sound (a soft droplet), glass
   transparency, launch at sign-in, and a test notification to preview changes.
 - Messages that arrive while TinyTodo is closed or offline pop up once it
   reconnects. On the very first run it starts from the newest message instead
@@ -144,6 +144,13 @@ Slack, notification policy and UI are separate layers, each testable on its own:
 
 The installer icon is generated from the tray artwork:
 `cargo test -- --ignored write_installer_icon`.
+
+The notification sound is `assets/droplet.mp3`, from Pixabay under the
+[Pixabay Content License](https://pixabay.com/service/license-summary/) (free
+to use, no attribution required). The app embeds `assets/droplet.wav`, a
+straight conversion of it to 16-bit PCM WAV. WAV is what Windows' `PlaySound`
+and every Linux player can play without extra codecs.
+`cargo test -- --ignored plays_droplet` plays it once on Windows.
 
 Debug builds have two helpers:
 

@@ -80,24 +80,32 @@ pub fn prepare_env() {
     }
 }
 
-/// Plays the desktop's "new notification" sound without blocking.
+/// The notification sound: `assets/droplet.mp3`, converted to WAV because
+/// that's what every OS sound API plays without extra codecs.
+const DROPLET: &[u8] = include_bytes!("../assets/droplet.wav");
+
+/// Plays the notification sound without blocking.
 pub fn play_notification_sound() {
     #[cfg(windows)]
     {
-        use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ALIAS, SND_ASYNC, SND_NODEFAULT};
-        let alias = wide("Notification.Default");
-        // SAFETY: `alias` is a NUL-terminated UTF-16 string that outlives the call;
-        // SND_ASYNC copies what it needs.
-        unsafe { PlaySoundW(alias.as_ptr(), std::ptr::null_mut(), SND_ALIAS | SND_ASYNC | SND_NODEFAULT) };
+        use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
+        // SAFETY: with SND_MEMORY the "name" is a pointer to an in-memory WAV image,
+        // which is static so it outlives the asynchronous playback.
+        unsafe { PlaySoundW(DROPLET.as_ptr().cast(), std::ptr::null_mut(), SND_MEMORY | SND_ASYNC | SND_NODEFAULT) };
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(not(windows))]
     {
-        // freedesktop sound theme, via libcanberra or PulseAudio/PipeWire's paplay.
-        let played = std::process::Command::new("canberra-gtk-play").args(["-i", "message-new-instant"]).spawn();
-        if played.is_err() {
-            let _ = std::process::Command::new("paplay")
-                .arg("/usr/share/sounds/freedesktop/stereo/message-new-instant.oga")
-                .spawn();
+        // Players take a file, so keep a copy in the cache directory.
+        let Some(path) = dirs::cache_dir().map(|d| d.join("tinytodo").join("droplet.wav")) else { return };
+        if std::fs::metadata(&path).map(|m| m.len()).ok() != Some(DROPLET.len() as u64) {
+            let _ = std::fs::create_dir_all(path.parent().unwrap());
+            let _ = std::fs::write(&path, DROPLET);
+        }
+        // PulseAudio/PipeWire first, then plain ALSA.
+        for player in ["paplay", "pw-play", "aplay"] {
+            if std::process::Command::new(player).arg(&path).spawn().is_ok() {
+                break;
+            }
         }
     }
 }
@@ -258,4 +266,29 @@ pub fn activations() -> impl Stream<Item = ()> {
     #[cfg(not(windows))]
     drop(tx);
     rx
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DROPLET;
+
+    #[test]
+    fn droplet_is_a_pcm_wav() {
+        assert_eq!(&DROPLET[0..4], b"RIFF");
+        assert_eq!(&DROPLET[8..16], b"WAVEfmt ");
+        assert_eq!(u16::from_le_bytes([DROPLET[20], DROPLET[21]]), 1, "PCM");
+        assert_eq!(u32::from_le_bytes(DROPLET[4..8].try_into().unwrap()) as usize, DROPLET.len() - 8);
+    }
+
+    /// Audible: `cargo test -- --ignored plays_droplet`
+    #[cfg(windows)]
+    #[test]
+    #[ignore]
+    fn plays_droplet() {
+        use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_MEMORY, SND_NODEFAULT, SND_SYNC};
+        // SAFETY: as in `play_notification_sound`; synchronous here.
+        let ok =
+            unsafe { PlaySoundW(DROPLET.as_ptr().cast(), std::ptr::null_mut(), SND_MEMORY | SND_SYNC | SND_NODEFAULT) };
+        assert_ne!(ok, 0, "Windows rejected the sound");
+    }
 }
