@@ -20,6 +20,12 @@ twice.
 - **Fading**: an untouched popup fades out after 15 seconds (configurable).
   It never fades while the pointer is over it. Any click, scroll, key press or
   hover starts the countdown over. A half-typed reply is kept for next time.
+- **Checklists**: when the assistant sends a Markdown checklist in a code
+  block (`- [ ] item` / `- [x] item` lines between triple backticks), it shows
+  up as checkboxes, in the popup and in the conversation. Tick as many as you
+  like, then press **Send checklist**: the revised list goes back to the
+  channel as a code block in the same format. A popup with unsent ticks
+  doesn't fade.
 - **Conversation**: the 10 most recent channel messages, fetched from Slack
   each time it opens. Open it from the tray icon (left-click on Windows, or
   *Open conversation* in the menu), or by launching TinyTodo again.
@@ -115,6 +121,11 @@ the running copy.
 The delivery cursor lives in `%LOCALAPPDATA%\tinytodo\state.json` or
 `~/.local/state/tinytodo/state.json`. Delete it to start fresh.
 
+Errors and crashes (Rust panics with a backtrace and, on Windows, native
+crashes) are written to `tinytodo.log` in the same folder. It is capped at
+256 KB; when full it is renamed to `tinytodo.log.old`, so at most about 512 KB is
+kept. Message text and tokens are never logged.
+
 ## Platform notes
 
 - **Windows**: the popup renders with OpenGL, which is the wgpu backend that
@@ -137,6 +148,8 @@ Slack, notification policy and UI are separate layers, each testable on its own:
 |---|---|
 | `src/slack.rs` | Web API client, Socket Mode framing, reconnecting feed |
 | `src/policy.rs` | Which messages notify; the dedup cursor (pure logic) |
+| `src/checklist.rs` | Markdown checklists in code blocks: parse and write back |
+| `src/logfile.rs` | Size-capped error and crash log |
 | `src/ui.rs` | iced popup / conversation and settings windows |
 | `src/style.rs` | Glass and settings styling (light/dark) |
 | `src/config.rs` | Config file, keyring tokens, cursor file |

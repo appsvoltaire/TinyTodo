@@ -1,7 +1,9 @@
 // No console window for release builds on Windows.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod checklist;
 mod config;
+mod logfile;
 mod platform;
 mod policy;
 mod slack;
@@ -42,12 +44,20 @@ fn main() -> iced::Result {
     if !platform::claim_single_instance() {
         return Ok(());
     }
+    logfile::install_crash_handlers();
     platform::prepare_env();
     let cfg = Config::load();
     let feed = cfg.clone().and_then(|cfg| {
         Ok(slack::Feed { tokens: Tokens::load()?, channel: cfg.channel, ignore_user_ids: cfg.ignore_user_ids })
     });
-    ui::run(cfg.unwrap_or_default(), feed)
+    if let Err(e) = &feed {
+        logfile::error(format!("not connecting to Slack: {e}"));
+    }
+    let result = ui::run(cfg.unwrap_or_default(), feed);
+    if let Err(e) = &result {
+        logfile::error(format!("UI failed: {e}"));
+    }
+    result
 }
 
 fn env_tokens() -> Result<Tokens, String> {
