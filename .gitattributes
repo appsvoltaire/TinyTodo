@@ -1,0 +1,5 @@
+# Normalize line endings in the repo; check out native endings per OS.
+* text=auto
+*.wav binary
+*.mp3 binary
+*.ico binary

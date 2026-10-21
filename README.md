@@ -1,5 +1,7 @@
 # TinyTodo
 
+[![CI](https://github.com/appsvoltaire/TinyTodo/actions/workflows/ci.yml/badge.svg)](https://github.com/appsvoltaire/TinyTodo/actions/workflows/ci.yml)
+
 A tiny desktop front-end for a personal assistant that lives in a private Slack
 channel. When the assistant posts, a small glass popup appears in the top-right
 corner; type a reply and press Enter, and it goes back to the channel.

@@ -2,6 +2,10 @@
 name = "tinytodo"
 version = "0.2.0"
 edition = "2024"
+description = "Tiny desktop popup for a personal assistant that lives in a private Slack channel"
+repository = "https://github.com/appsvoltaire/TinyTodo"
+readme = "README.md"
+publish = false
 
 [dependencies]
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
