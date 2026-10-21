@@ -145,6 +145,9 @@ mod tests {
         let list = Checklist::parse("```\n- [ ] ping <!channel> and <@U123|sam> <https://x.io|here>\n```").unwrap();
         assert_eq!(list.items[0].label, "ping @channel and @sam here");
         assert!(!list.to_slack().contains('<'));
+        // So must invisible characters that make an item display as something it isn't.
+        let list = Checklist::parse("```\n- [ ] Pay \u{202E}sbuh\u{202C}\n```").unwrap();
+        assert_eq!(list.to_slack(), "```\n- [ ] Pay sbuh\n```");
     }
 
     #[test]

@@ -343,6 +343,9 @@ impl App {
                 Status::Connecting => "TinyTodo — connecting…".to_string(),
                 Status::Offline(reason) => format!("TinyTodo — offline ({reason})"),
             };
+            // Windows keeps 127 characters plus a terminator, and the reason can come from Slack.
+            let mut units = 0;
+            let tip: String = tip.chars().take_while(|c| (units += c.len_utf16(), units).1 < 128).collect();
             let _ = tray.set_tooltip(Some(tip));
         }
         self.status = status;

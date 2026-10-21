@@ -41,7 +41,13 @@ impl std::fmt::Debug for Client {
 
 impl Client {
     pub fn new(tokens: Tokens) -> Self {
-        let http = reqwest::Client::builder().timeout(Duration::from_secs(20)).build().expect("http client");
+        // The bearer token only ever goes to slack.com over HTTPS: no redirects, no plain HTTP.
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(20))
+            .https_only(true)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("http client");
         Self { http, tokens: Arc::new(tokens) }
     }
 
@@ -134,11 +140,20 @@ impl Client {
 
     async fn socket_url(&self) -> Result<String, String> {
         let r = self.call("apps.connections.open", &self.tokens.app, &[]).await?;
-        let url = r["url"].as_str().ok_or("apps.connections.open: no url")?.to_string();
-        // Makes Slack rotate the connection every few seconds; handy for testing reconnects.
-        Ok(if std::env::var_os("TINYTODO_DEBUG_RECONNECTS").is_some() { url + "&debug_reconnects=true" } else { url })
+        let url = check_socket_url(r["url"].as_str().ok_or("apps.connections.open: no url")?.to_string())?;
+        // Debug builds only: makes Slack rotate the connection every few minutes, to test reconnects.
+        let debug_reconnects = cfg!(debug_assertions) && std::env::var_os("TINYTODO_DEBUG_RECONNECTS").is_some();
+        Ok(if debug_reconnects { url + "&debug_reconnects=true" } else { url })
     }
 }
+
+/// The socket carries every message, so it must be encrypted like the API calls.
+fn check_socket_url(url: String) -> Result<String, String> {
+    if url.starts_with("wss://") { Ok(url) } else { Err("apps.connections.open: socket URL is not wss://".into()) }
+}
+
+/// Slack's events are a few KB; anything near this size is not a real one.
+const MAX_SOCKET_MESSAGE: usize = 1 << 20;
 
 fn looks_like_channel_id(s: &str) -> bool {
     s.len() >= 9
@@ -174,7 +189,15 @@ pub fn plain_text(text: &str) -> String {
         rest = &rest[start + len + 1..];
     }
     out.push_str(rest);
-    out.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+    let decoded = out.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&");
+    decoded.chars().filter(|&c| !is_deceptive(c)).collect()
+}
+
+/// Invisible characters that make text display differently from what it contains: bidi
+/// overrides and isolates (which could, say, disguise a checklist item that is then sent
+/// back) and control characters other than newlines and tabs.
+fn is_deceptive(c: char) -> bool {
+    (c.is_control() && c != '\n' && c != '\t') || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 
 /// Escapes plain text for Slack, so it shows as written instead of being read as markup.
@@ -310,7 +333,12 @@ async fn listen(
     backoff: &mut Duration,
 ) -> Result<(), String> {
     let url = session.client.socket_url().await?;
-    let (mut ws, _) = tokio_tungstenite::connect_async(url.as_str()).await.map_err(|e| format!("websocket: {e}"))?;
+    let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+        .max_message_size(Some(MAX_SOCKET_MESSAGE))
+        .max_frame_size(Some(MAX_SOCKET_MESSAGE));
+    let (mut ws, _) = tokio_tungstenite::connect_async_with_config(url.as_str(), Some(config), false)
+        .await
+        .map_err(|e| format!("websocket: {e}"))?;
     let mut ping = tokio::time::interval(PING_EVERY);
     let mut last_seen = Instant::now();
     loop {
@@ -407,6 +435,21 @@ mod tests {
         assert_eq!(plain_text("hi <@U123>"), "hi @U123");
         assert_eq!(plain_text("<!here> ping"), "@here ping");
         assert_eq!(plain_text("unclosed < bracket"), "unclosed < bracket");
+    }
+
+    #[test]
+    fn plain_text_drops_deceptive_characters() {
+        // An override (U+202E) makes "sbuh" display as "hubs" while the text says otherwise.
+        assert_eq!(plain_text("Pay \u{202E}sbuh\u{202C} now"), "Pay sbuh now");
+        assert_eq!(plain_text("a\u{2066}b\u{2069}\r\x1b[2Jc\u{7}"), "ab[2Jc");
+        assert_eq!(plain_text("line 1\n\tline 2 – שלום"), "line 1\n\tline 2 – שלום");
+    }
+
+    #[test]
+    fn socket_urls_must_use_tls() {
+        assert!(check_socket_url("wss://wss-primary.slack.com/link/?ticket=t".into()).is_ok());
+        assert!(check_socket_url("ws://wss-primary.slack.com/link/?ticket=t".into()).is_err());
+        assert!(check_socket_url("https://example.com".into()).is_err());
     }
 
     #[test]
