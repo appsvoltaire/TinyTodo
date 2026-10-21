@@ -3,6 +3,7 @@ name = "tinytodo"
 version = "0.3.0"
 edition = "2024"
 description = "Tiny desktop popup for a personal assistant that lives in a private Slack channel"
+license-file = "LICENSE"
 repository = "https://github.com/appsvoltaire/TinyTodo"
 readme = "README.md"
 publish = false

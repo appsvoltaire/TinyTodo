@@ -173,3 +173,19 @@ Debug builds have two helpers:
   assistant's, so the whole loop can be tested with just the app's tokens.
 - `TINYTODO_DEBUG_RECONNECTS=1` asks Slack to rotate the socket every few
   minutes, which exercises reconnection.
+
+## License
+
+TinyTodo is source-available under the [Apache License 2.0](LICENSE) with the
+[Commons Clause](https://commonsclause.com/). You may use, modify and share it,
+and build your own things on it, but you may not sell it or a product whose
+value comes entirely or substantially from it. Keep the [NOTICE](NOTICE) file
+in anything you redistribute.
+
+The name "TinyTodo" and its icon are not covered by the license: a fork needs
+its own name and icon. "Based on TinyTodo" is welcome.
+
+Contributions are licensed to the author under the plain Apache License 2.0,
+without the Commons Clause. Opening a pull request means you agree to that.
+
+Copyright 2026 appsvoltaire.

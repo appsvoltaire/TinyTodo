@@ -1,12 +1,17 @@
 # Builds the release binary and the Windows installer:
 #   target\installer\TinyTodo-Setup-<version>.exe
-# Needs Inno Setup 6 (https://jrsoftware.org/isdl.php).
+# Needs Inno Setup 6 (https://jrsoftware.org/isdl.php) and cargo-about
+# (cargo install cargo-about --locked --features cli).
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot
 Push-Location $root
 try {
     cargo build --release
     if ($LASTEXITCODE) { throw 'cargo build failed' }
+
+    # Licenses of the Rust crates compiled into tinytodo.exe; they ship with it.
+    cargo about generate about.hbs -o target\THIRD-PARTY-LICENSES.html
+    if ($LASTEXITCODE) { throw 'cargo about failed (cargo install cargo-about --locked --features cli)' }
 
     $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
     $iscc = @(

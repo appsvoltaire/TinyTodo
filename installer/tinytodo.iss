@@ -21,6 +21,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\target\installer
 OutputBaseFilename=TinyTodo-Setup-{#AppVersion}
+LicenseFile=..\LICENSE
 SetupIconFile=tinytodo.ico
 UninstallDisplayIcon={app}\tinytodo.ico
 UninstallDisplayName=TinyTodo
@@ -31,6 +32,9 @@ SolidCompression=yes
 [Files]
 Source: "..\target\release\tinytodo.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "tinytodo.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
+Source: "..\NOTICE"; DestDir: "{app}"; DestName: "NOTICE.txt"; Flags: ignoreversion
+Source: "..\target\THIRD-PARTY-LICENSES.html"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\TinyTodo"; Filename: "{app}\tinytodo.exe"; IconFilename: "{app}\tinytodo.ico"

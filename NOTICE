@@ -1,0 +1,25 @@
+TinyTodo
+Copyright 2026 appsvoltaire
+https://github.com/appsvoltaire/TinyTodo
+
+This software is licensed under the Apache License, Version 2.0, subject to
+the "Commons Clause" License Condition v1.0: you may use, modify and
+redistribute it, but you may not Sell it, as defined in the LICENSE file.
+This notice, including the Commons Clause notice, must be kept in any
+redistribution or derivative work, as section 4(d) of the License requires.
+
+Name and icon
+The name "TinyTodo" and the TinyTodo icon and tray artwork are not licensed
+under the License (see its section 6). A fork or derivative work must use a
+different name and icon, and must not suggest that it is TinyTodo or is made
+or endorsed by the author. Saying that it is based on TinyTodo is fine.
+
+Notification sound
+assets/droplet.mp3 and assets/droplet.wav are from Pixabay and are used under
+the Pixabay Content License (https://pixabay.com/service/license-summary/),
+not under the License above.
+
+Third-party software
+TinyTodo is built with open-source Rust crates. Their licenses are listed in
+THIRD-PARTY-LICENSES.html, which ships with the installer and can be generated
+with `cargo about generate about.hbs -o THIRD-PARTY-LICENSES.html`.
