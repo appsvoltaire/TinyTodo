@@ -232,7 +232,6 @@ pub fn claim_single_instance() -> bool {
 
 #[cfg(windows)]
 mod instance {
-    /// The installer checks for this mutex (`AppMutex`) too.
     pub const MUTEX: &str = "TinyTodo.Instance";
     pub const EVENT: &str = "TinyTodo.Activate";
     pub static EVENT_HANDLE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);

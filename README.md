@@ -11,19 +11,42 @@ twice.
 
 ## Using it
 
-- **Popup**: appears without stealing focus. Click the reply field (or the
-  popup) to type. **Enter** sends, **Esc** dismisses. **History** expands into
-  the conversation.
+- **Popup**: appears without stealing focus and is sized to the newest message.
+  Older unread messages are above it; scroll up to see them, or drag the grip
+  at the bottom edge to make the popup taller. Click the reply field to type.
+  **Enter** sends, **Esc** dismisses. **History** opens the conversation.
+- **Fading**: an untouched popup fades out after 15 seconds (configurable).
+  It never fades while the pointer is over it. Any click, scroll, key press or
+  hover starts the countdown over. A half-typed reply is kept for next time.
 - **Conversation**: the 10 most recent channel messages, fetched from Slack
   each time it opens. Open it from the tray icon (left-click on Windows, or
-  *Open conversation* in the menu).
-- **Tray menu**: *Open conversation*, *Quit TinyTodo*. The tooltip shows when
-  the app is offline.
+  *Open conversation* in the menu), or by launching TinyTodo again.
+- **Tray menu**: *Open conversation*, *Settings…*, *Quit TinyTodo*. The tooltip
+  shows when the app is offline.
+- **Settings**: popups on/off, fade delay, notification sound, glass
+  transparency, launch at sign-in, and a test notification to preview changes.
 - Messages that arrive while TinyTodo is closed or offline pop up once it
   reconnects. On the very first run it starts from the newest message instead
   of replaying the channel.
 
-## Setup
+## Install on Windows
+
+Run `TinyTodo-Setup-<version>.exe`. It installs for the current user (no admin
+rights needed) and asks for the two Slack tokens. It checks them with Slack and
+stores them in Windows Credential Manager. Leave both fields empty to keep
+tokens that are already stored. Setup can also start TinyTodo at sign-in. The
+uninstaller (Settings → Apps) asks whether to remove the stored tokens too.
+
+To build the installer yourself, you need
+[Inno Setup 6](https://jrsoftware.org/isdl.php). Then run:
+
+```bash
+powershell -ExecutionPolicy Bypass -File installer/build.ps1
+```
+
+The installer is written to `target\installer\`.
+
+## Setup from source
 
 ### 1. Slack app
 
@@ -57,17 +80,19 @@ SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… tinytodo --save-tokens
 
 This stores them in Windows Credential Manager or the Secret Service (KWallet
 on KDE). If `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` are set when the app
-starts, those are used instead.
+starts, those are used instead. `tinytodo --check-tokens` verifies them with
+Slack, and `tinytodo --forget-tokens` removes the stored ones.
 
 ### 4. Run at login
 
-- Windows: put a shortcut to `tinytodo.exe` in `shell:startup`.
-- KDE: System Settings → Autostart → Add Application.
+Turn on *Launch TinyTodo when I sign in* in Settings. On Windows this writes a
+`HKCU\…\Run` entry; on Linux it writes `~/.config/autostart/tinytodo.desktop`.
 
 ## Configuration
 
-`config.toml` is created with comments on first run, in
-`%APPDATA%\tinytodo\` (Windows) or `~/.config/tinytodo/` (Linux):
+Settings edits `config.toml`, which you can also edit by hand; comments are
+kept. It lives in `%APPDATA%\tinytodo\` (Windows) or `~/.config/tinytodo/`
+(Linux):
 
 ```toml
 channel = "todos-private"   # private channel name, or any channel ID
@@ -75,8 +100,15 @@ ignore_user_ids = []        # e.g. your own Slack user ID
 
 [notifications]
 enabled = true              # false: no popups; read via the tray instead
-auto_hide_seconds = 0       # hide an untouched popup after N seconds (0 = never)
+fade_after_seconds = 15     # fade an untouched popup after N seconds (0 = never)
+sound = false               # play the system notification sound
+
+[appearance]
+transparency = 0.40         # 0.0 (solid) to 0.80
 ```
+
+Only one TinyTodo runs at a time. Launching it again opens the conversation in
+the running copy.
 
 The delivery cursor lives in `%LOCALAPPDATA%\tinytodo\state.json` or
 `~/.local/state/tinytodo/state.json`. Delete it to start fresh.
@@ -97,15 +129,21 @@ The delivery cursor lives in `%LOCALAPPDATA%\tinytodo\state.json` or
 cargo test
 ```
 
-The code has three layers, each testable on its own:
+Slack, notification policy and UI are separate layers, each testable on its own:
 
 | File | Role |
 |---|---|
 | `src/slack.rs` | Web API client, Socket Mode framing, reconnecting feed |
 | `src/policy.rs` | Which messages notify; the dedup cursor (pure logic) |
-| `src/ui.rs` | iced popup / conversation window |
+| `src/ui.rs` | iced popup / conversation and settings windows |
+| `src/style.rs` | Glass and settings styling (light/dark) |
 | `src/config.rs` | Config file, keyring tokens, cursor file |
-| `src/tray.rs`, `src/platform.rs` | Tray icon; per-OS window tweaks |
+| `src/tray.rs` | Tray icon and menu; the app icon artwork |
+| `src/platform.rs` | Per-OS window tweaks, sound, sign-in launch, single instance |
+| `installer/` | Inno Setup script, build script, icon |
+
+The installer icon is generated from the tray artwork:
+`cargo test -- --ignored write_installer_icon`.
 
 Debug builds have two helpers:
 
