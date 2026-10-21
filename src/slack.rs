@@ -177,6 +177,11 @@ pub fn plain_text(text: &str) -> String {
     out.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
 }
 
+/// Escapes plain text for Slack, so it shows as written instead of being read as markup.
+pub fn escape(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
 /// A Socket Mode frame, reduced to what we act on.
 #[derive(Debug, PartialEq)]
 enum Frame {
@@ -329,7 +334,7 @@ async fn listen(
                         catch_up(session, gate, out).await?;
                     }
                     Frame::Disconnect(reason) => {
-                        eprintln!("tinytodo: Slack asked to reconnect ({reason})");
+                        crate::logfile::error(format!("Slack asked to reconnect ({reason})"));
                         return Ok(());
                     }
                     Frame::Envelope { id, message } => {
@@ -384,7 +389,7 @@ async fn deliver(gate: &mut Gate, out: &mut mpsc::Sender<Event>, message: Messag
 fn save_cursor(gate: &Gate) {
     let state = State { cursor: gate.cursor().map(str::to_string) };
     if let Err(e) = state.save() {
-        eprintln!("tinytodo: could not save state: {e}");
+        crate::logfile::error(format!("could not save state: {e}"));
     }
 }
 

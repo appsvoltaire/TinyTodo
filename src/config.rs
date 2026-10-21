@@ -126,6 +126,11 @@ pub fn config_dir() -> PathBuf {
     dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("tinytodo")
 }
 
+/// Where the delivery cursor and the log live.
+pub fn state_dir() -> PathBuf {
+    dirs::state_dir().or_else(dirs::data_local_dir).unwrap_or_else(|| PathBuf::from(".")).join("tinytodo")
+}
+
 /// Write-then-rename so a crash can't leave a truncated file behind.
 fn write_atomic(path: &Path, contents: &str) -> Result<(), String> {
     if let Some(dir) = path.parent() {
@@ -198,11 +203,7 @@ pub struct State {
 
 impl State {
     fn path() -> PathBuf {
-        dirs::state_dir()
-            .or_else(dirs::data_local_dir)
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("tinytodo")
-            .join("state.json")
+        state_dir().join("state.json")
     }
 
     pub fn load() -> Self {

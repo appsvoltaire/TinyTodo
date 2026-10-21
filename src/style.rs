@@ -1,8 +1,7 @@
 //! Colors and widget styles: the glass popup and the plain settings window,
 //! each in a light and a dark variant.
 
-use crate::slack::{self, Message};
-use iced::widget::{button, column, container, row, scrollable, space, text, text_input};
+use iced::widget::{button, checkbox, column, container, row, scrollable, space, text, text_input};
 use iced::{Background, Border, Color, Element, Fill, Font, Radians, Shadow, Theme, Vector, font, gradient};
 
 pub const ACCENT: Color = Color::from_rgb(0.04, 0.52, 1.0);
@@ -196,13 +195,20 @@ impl Palette {
         }
     }
 
-    pub fn bubble<'a, M: 'a>(self, message: &'a Message, mine: bool, max_width: f32, time: String) -> Element<'a, M> {
+    /// A chat bubble; `body` renders the message in the text color it is given.
+    pub fn bubble<'a, M: 'a>(
+        self,
+        body: impl FnOnce(Color) -> Element<'a, M>,
+        mine: bool,
+        max_width: f32,
+        time: String,
+    ) -> Element<'a, M> {
         let who = if mine { "You" } else { "Assistant" };
         let (body_color, meta_color) =
             if mine { (Color::WHITE, Color::from_rgba(1.0, 1.0, 1.0, 0.7)) } else { (self.text, self.dim) };
         let body = column![
-            text(slack::plain_text(&message.text)).size(14).color(self.faded(body_color)),
-            text(format!("{who} · {time}")).size(11).color(self.faded(meta_color)),
+            body(self.faded(body_color)),
+            text(format!("{who} · {time}")).size(11).color(self.faded(meta_color))
         ]
         .spacing(3);
         let bubble = container(body).padding([8, 12]).max_width(max_width).style(move |_| container::Style {
@@ -211,6 +217,28 @@ impl Palette {
             ..Default::default()
         });
         if mine { row![space::horizontal(), bubble] } else { row![bubble, space::horizontal()] }.into()
+    }
+
+    /// A checklist item; ticked ones fade back so what's left stands out.
+    pub fn checkbox(&self, status: checkbox::Status, text_color: Color) -> checkbox::Style {
+        let (checked, hovered) = match status {
+            checkbox::Status::Active { is_checked } | checkbox::Status::Disabled { is_checked } => (is_checked, false),
+            checkbox::Status::Hovered { is_checked } => (is_checked, true),
+        };
+        checkbox::Style {
+            background: if checked {
+                self.faded(ACCENT).into()
+            } else {
+                self.wash(if hovered { 0.18 } else { 0.08 }).into()
+            },
+            icon_color: self.faded(Color::WHITE),
+            border: Border {
+                color: if checked { self.faded(ACCENT) } else { self.wash(0.4) },
+                width: 1.0,
+                radius: 5.0.into(),
+            },
+            text_color: Some(if checked { text_color.scale_alpha(0.55) } else { text_color }),
+        }
     }
 
     /// Solid background for the settings window.

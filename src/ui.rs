@@ -1,14 +1,18 @@
 //! Windows and app state: the glass popup / conversation panel in the top-right
 //! corner, and a small settings window, both reachable from the tray.
 
+use crate::checklist::Checklist;
 use crate::config::{self, Config};
 use crate::platform;
 use crate::policy;
 use crate::slack::{self, Feed, Message, Session};
 use crate::style::{Palette, SEMIBOLD};
 use crate::tray;
-use iced::widget::{column, container, mouse_area, operation, row, slider, space, stack, text, text_input, toggler};
+use iced::widget::{
+    checkbox, column, container, mouse_area, operation, row, slider, space, stack, text, text_input, toggler,
+};
 use iced::{Center, Color, Element, Fill, Point, Size, Subscription, Task, Theme, event, keyboard, mouse, window};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 const WIDTH: f32 = 400.0;
@@ -59,6 +63,8 @@ struct App {
     unread: Vec<Message>,
     history: Vec<Message>,
     draft: String,
+    /// Checklist boxes ticked but not sent yet, by message timestamp.
+    ticks: HashMap<String, Vec<bool>>,
     sending: bool,
     error: Option<String>,
     /// The pointer is over the popup; it never fades while hovered.
@@ -94,6 +100,10 @@ enum Msg {
     StartResize,
     Send,
     Sent(Result<Message, String>),
+    /// Tick or untick item `.1` of the checklist in message `.0`.
+    Check(String, usize, bool),
+    SendChecklist(String),
+    ChecklistSent(String, Result<Message, String>),
     ShowHistory,
     History(Result<Vec<Message>, String>),
     Dismiss,
@@ -110,7 +120,7 @@ enum Msg {
 
 impl App {
     fn boot(cfg: Config, feed: Result<Feed, String>) -> (Self, Task<Msg>) {
-        let tray = tray::create().map_err(|e| eprintln!("tinytodo: no tray icon: {e}")).ok();
+        let tray = tray::create().map_err(|e| crate::logfile::error(format!("no tray icon: {e}"))).ok();
         let (feed, error) = match feed {
             Ok(feed) => (Some(feed), None),
             Err(e) => (None, Some(e)),
@@ -128,6 +138,7 @@ impl App {
             unread: Vec::new(),
             history: Vec::new(),
             draft: String::new(),
+            ticks: HashMap::new(),
             sending: false,
             error,
             hovered: false,
@@ -225,7 +236,27 @@ impl App {
                     return self.hide();
                 }
             }
-            Msg::Sent(Err(e)) | Msg::History(Err(e)) => {
+            Msg::Check(ts, index, done) => {
+                let original = self.find(&ts).and_then(|m| Checklist::parse(&m.text));
+                if let Some(list) = original {
+                    let ticks = self.ticks.entry(ts).or_insert_with(|| list.items.iter().map(|i| i.done).collect());
+                    if let Some(tick) = ticks.get_mut(index) {
+                        *tick = done;
+                    }
+                }
+                return self.restart_fade();
+            }
+            Msg::SendChecklist(ts) => return self.send_checklist(ts),
+            Msg::ChecklistSent(ts, Ok(sent)) => {
+                self.sending = false;
+                self.ticks.remove(&ts);
+                if self.mode == Mode::Conversation {
+                    keep_recent(&mut self.history, sent);
+                } else {
+                    return self.hide();
+                }
+            }
+            Msg::Sent(Err(e)) | Msg::History(Err(e)) | Msg::ChecklistSent(_, Err(e)) => {
                 self.sending = false;
                 self.error = Some(e);
                 return self.resize();
@@ -291,7 +322,7 @@ impl App {
             slack::Event::Ready(session) => self.session = Some(session),
             slack::Event::Connected => self.set_status(Status::Online),
             slack::Event::Disconnected(reason) => {
-                eprintln!("tinytodo: disconnected: {reason}");
+                crate::logfile::error(format!("disconnected: {reason}"));
                 self.set_status(Status::Offline(reason));
             }
             slack::Event::Notify(message) => {
@@ -335,6 +366,7 @@ impl App {
             && !self.hovered
             && !self.sending
             && self.error.is_none()
+            && !self.unread.iter().any(|m| self.checklist(m).is_some_and(|(_, edited)| edited))
     }
 
     fn schedule_fade(&mut self) -> Task<Msg> {
@@ -421,6 +453,39 @@ impl App {
         Task::perform(async move { client.post(&channel, &text).await }, Msg::Sent)
     }
 
+    /// Posts the edited checklist in message `ts` back to the channel.
+    fn send_checklist(&mut self, ts: String) -> Task<Msg> {
+        let Some((list, true)) = self.find(&ts).and_then(|m| self.checklist(m)) else {
+            return Task::none();
+        };
+        if self.sending {
+            return Task::none();
+        }
+        let Some(session) = &self.session else {
+            self.error = Some("Not connected to Slack yet.".into());
+            return self.resize();
+        };
+        self.sending = true;
+        self.error = None;
+        let (client, channel, text) = (session.client.clone(), session.channel.clone(), list.to_slack());
+        Task::perform(async move { client.post(&channel, &text).await }, move |r| Msg::ChecklistSent(ts.clone(), r))
+    }
+
+    fn find(&self, ts: &str) -> Option<&Message> {
+        self.unread.iter().chain(&self.history).find(|m| m.ts == ts)
+    }
+
+    /// The checklist in `message`, if it has one, with unsent ticks applied; and whether there are any.
+    fn checklist(&self, message: &Message) -> Option<(Checklist, bool)> {
+        let mut list = Checklist::parse(&message.text)?;
+        let mut edited = false;
+        for (item, &done) in list.items.iter_mut().zip(self.ticks.get(&message.ts).into_iter().flatten()) {
+            edited |= item.done != done;
+            item.done = done;
+        }
+        Some((list, edited))
+    }
+
     /// Opens the popup window (or adapts the open one) for `mode`.
     fn show(&mut self, mode: Mode, activate: bool) -> Task<Msg> {
         if self.mode != mode {
@@ -475,6 +540,8 @@ impl App {
         self.fade_generation += 1;
         self.fading_since = None;
         self.fade = 1.0;
+        // Ticks on dismissed popups go; those in the conversation stay until it's refreshed.
+        self.ticks.retain(|ts, _| self.history.iter().any(|m| &m.ts == ts));
         match self.popup.take() {
             Some(id) => window::close(id),
             None => Task::none(),
@@ -486,10 +553,10 @@ impl App {
         match self.mode {
             Mode::Conversation => CONVERSATION_HEIGHT,
             Mode::Popup => {
-                let latest = self.unread.last().map(|m| slack::plain_text(&m.text));
-                let texts: Vec<_> = latest.into_iter().chain(self.error.clone()).collect();
-                let body = texts.iter().map(|t| estimate_text_height(t)).sum::<f32>()
-                    + MESSAGE_GAP * texts.len().saturating_sub(1) as f32;
+                let latest = self.unread.last().map(|m| estimate_message_height(&m.text));
+                let heights: Vec<f32> =
+                    latest.into_iter().chain(self.error.as_deref().map(estimate_text_height)).collect();
+                let body = heights.iter().sum::<f32>() + MESSAGE_GAP * heights.len().saturating_sub(1) as f32;
                 // Gutters, panel padding, header, input, buttons and the gaps between them.
                 let chrome = 2.0 * GUTTER + 32.0 + 20.0 + 40.0 + 32.0 + 3.0 * 12.0;
                 (chrome + body.clamp(20.0, MAX_POPUP_BODY)).max(MIN_HEIGHT)
@@ -567,10 +634,9 @@ impl App {
             .push(count)
             .spacing(8)
             .align_y(Center);
-        let messages =
-            column(self.unread.iter().map(|m| text(slack::plain_text(&m.text)).size(14).color(p.text).into()))
-                .spacing(MESSAGE_GAP)
-                .push(self.error.as_ref().map(|e| text(e).size(12).color(p.error)));
+        let messages = column(self.unread.iter().map(|m| self.message_body(m, p, p.text, true)))
+            .spacing(MESSAGE_GAP)
+            .push(self.error.as_ref().map(|e| text(e).size(12).color(p.error)));
         let reply_ready = !self.sending && !self.draft.trim().is_empty() && self.session.is_some();
         let actions = row![
             p.button("History", Some(Msg::ShowHistory), false),
@@ -596,11 +662,15 @@ impl App {
         .spacing(8)
         .align_y(Center);
         let identity = self.session.as_ref().map(|s| &s.identity);
-        let bubbles = self
-            .history
-            .iter()
-            .filter(|m| policy::is_conversational(m) && !m.text.trim().is_empty())
-            .map(|m| p.bubble(m, identity.is_some_and(|i| i.is_mine(m)), WIDTH * 0.75, time_label(&m.ts)));
+        let bubbles =
+            self.history.iter().filter(|m| policy::is_conversational(m) && !m.text.trim().is_empty()).map(|m| {
+                let mine = identity.is_some_and(|i| i.is_mine(m));
+                // Our own posts (sent checklists included) are a record, not something to tick.
+                let body = |color| self.message_body(m, p, color, !mine);
+                // Checklists get the full width so their items don't wrap into a tall column.
+                let max_width = if Checklist::parse(&m.text).is_some() { WIDTH } else { WIDTH * 0.75 };
+                p.bubble(body, mine, max_width, time_label(&m.ts))
+            });
         let list = column(bubbles).spacing(8).push(self.error.as_ref().map(|e| text(e).size(12).color(p.error)));
         let send_ready = !self.sending && !self.draft.trim().is_empty() && self.session.is_some();
         let actions = row![
@@ -610,6 +680,34 @@ impl App {
         ]
         .spacing(8);
         column![header, p.scroll(list), self.input(p), actions].spacing(12).into()
+    }
+
+    /// A message's text; a checklist becomes checkboxes and, if `interactive`, a send button.
+    fn message_body(&self, m: &Message, p: Palette, color: Color, interactive: bool) -> Element<'_, Msg> {
+        let Some((list, edited)) = self.checklist(m) else {
+            return text(slack::plain_text(&m.text)).size(14).color(color).into();
+        };
+        let boxes = list.items.into_iter().enumerate().map(|(index, item)| {
+            let ts = m.ts.clone();
+            checkbox(item.done)
+                .label(item.label)
+                .size(16)
+                .spacing(10)
+                .text_size(14)
+                .on_toggle_maybe(interactive.then_some(move |done| Msg::Check(ts.clone(), index, done)))
+                .style(move |_, status| p.checkbox(status, color))
+                .into()
+        });
+        let send_ready = edited && !self.sending && self.session.is_some();
+        let send = interactive.then(|| {
+            let label = if self.sending && edited { "Sending…" } else { "Send checklist" };
+            p.button(label, send_ready.then(|| Msg::SendChecklist(m.ts.clone())), true)
+        });
+        let prose = |t: String| (!t.is_empty()).then(|| text(t).size(14).color(color));
+        let list =
+            column![].push(prose(list.before)).push(column(boxes).spacing(8)).push(prose(list.after)).spacing(10);
+        // Right-aligned by the column rather than a spacer, which would stretch a bubble to fill its row.
+        column![list].push(send).spacing(10).align_x(iced::Alignment::End).into()
     }
 
     fn input(&self, p: Palette) -> Element<'_, Msg> {
@@ -692,9 +790,24 @@ fn keep_recent(list: &mut Vec<Message>, message: Message) {
 
 /// Rough wrapped height of message text at size 14 in the popup's width.
 fn estimate_text_height(text: &str) -> f32 {
-    const CHARS_PER_LINE: usize = 46;
-    let lines: usize = text.lines().map(|l| l.chars().count().div_ceil(CHARS_PER_LINE).max(1)).sum();
+    wrapped_height(text, 46)
+}
+
+fn wrapped_height(text: &str, chars_per_line: usize) -> f32 {
+    let lines: usize = text.lines().map(|l| l.chars().count().div_ceil(chars_per_line).max(1)).sum();
     lines.max(1) as f32 * 20.0
+}
+
+/// Like `estimate_text_height`, but a checklist is a column of checkboxes plus its send button.
+fn estimate_message_height(text: &str) -> f32 {
+    let Some(list) = Checklist::parse(text) else {
+        return estimate_text_height(&slack::plain_text(text));
+    };
+    // Labels sit beside the box, so they wrap a little sooner.
+    let boxes = list.items.iter().map(|i| wrapped_height(&i.label, 41) + 8.0).sum::<f32>() - 8.0;
+    let prose: f32 =
+        [list.before, list.after].iter().filter(|t| !t.is_empty()).map(|t| estimate_text_height(t) + 10.0).sum();
+    boxes + prose + 10.0 + 32.0
 }
 
 fn time_label(ts: &str) -> String {
