@@ -6,6 +6,10 @@ A tiny desktop front-end for a personal assistant that lives in a private Slack
 channel. When the assistant posts, a small glass popup appears in the top-right
 corner; type a reply and press Enter, and it goes back to the channel.
 
+<p align="center">
+  <img src="docs/popup.png" width="414" alt="A TinyTodo popup in the top-right corner: the assistant asks &quot;want me to book the 2pm slot with Sam?&quot;, with a reply field and History, Dismiss and Reply buttons">
+</p>
+
 TinyTodo keeps no tasks, history or memory of its own. The assistant owns the
 work and Slack owns the conversation. Locally there is only a config file, the
 Slack tokens (in the OS keyring), and one timestamp so a message never pops up
@@ -26,6 +30,10 @@ twice.
   like, then press **Send checklist**: the revised list goes back to the
   channel as a code block in the same format. A popup with unsent ticks
   doesn't fade.
+
+  <img src="docs/checklist-markdown.jpg" width="360" alt="A Markdown checklist as the assistant sends it: six unticked &quot;- [ ]&quot; lines in a code block">
+  <img src="docs/checklist-popup.jpg" width="360" alt="The same checklist in the TinyTodo popup as six checkboxes, with a Send checklist button">
+
 - **Conversation**: the 10 most recent channel messages, fetched from Slack
   each time it opens. Open it from the tray icon (left-click on Windows, or
   *Open conversation* in the menu), or by launching TinyTodo again.
@@ -36,6 +44,47 @@ twice.
 - Messages that arrive while TinyTodo is closed or offline pop up once it
   reconnects. On the very first run it starts from the newest message instead
   of replaying the channel.
+
+## Teaching your assistant to send checklists
+
+TinyTodo turns a message into checkboxes only when it contains a code block
+holding nothing but checklist lines. Most assistants write lists as plain
+bullets, so tell yours the format once, in its system prompt or instructions.
+For example:
+
+````text
+When you send me a list of tasks or options I can tick off, format it as a
+Markdown checklist inside a Slack code block, like this:
+
+```
+- [ ] Pick up dry cleaning
+- [ ] Reply to Sam about the weekend
+- [x] Pay the electric bill
+```
+
+Rules:
+- Every line inside the code block is one item: "- [ ] " for open,
+  "- [x] " for done. No headings, notes or other text inside.
+- Put any explanation before or after the code block, not inside it.
+- Send at most one checklist per message, and no more than 100 items.
+- When I send a checklist back, the ticked items are the ones I chose or
+  finished. Act on them, and send the updated list when it helps.
+````
+
+What TinyTodo accepts:
+
+- **Bullets**: `-`, `*` or `+`, followed by a space, then `[ ]`, `[x]` or
+  `[X]`, a space and the label.
+- **Nesting**: indented items are kept indented when the list is sent back.
+- **Language tag**: an opening fence such as ` ```markdown ` is fine.
+- **Text around the block**: allowed, and shown above and below the
+  checkboxes. Only the first checklist block in a message becomes
+  checkboxes; other code blocks stay as they are.
+- **Slack formatting in labels** (bold, links, mentions) is shown as plain
+  text and sent back plain.
+
+TinyTodo reads the message's `text` field. If your assistant posts with
+Block Kit, put the code block in `text` too, not only in the blocks.
 
 ## Install on Windows
 
