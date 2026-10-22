@@ -1,0 +1,63 @@
+name: Release
+
+# Pushing a tag like v0.3.1 builds the Windows installer and publishes it as a
+# GitHub release. "Run workflow" on the Actions tab builds it without
+# publishing; the installer is attached to that run instead.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Check the tag matches Cargo.toml
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ("v$version" -ne $env:GITHUB_REF_NAME) {
+            throw "Tag $env:GITHUB_REF_NAME doesn't match Cargo.toml version $version"
+          }
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          ./installer/build.ps1
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          $exe = Get-Item "target/installer/TinyTodo-Setup-$version.exe"
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  $($exe.Name)" | Out-File -Encoding ascii -NoNewline "$($exe.FullName).sha256"
+          "INSTALLER=$($exe.FullName)" >> $env:GITHUB_ENV
+
+      - name: Attach to this run
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer
+          path: |
+            ${{ env.INSTALLER }}
+            ${{ env.INSTALLER }}.sha256
+
+      - name: Publish the release
+        if: github.event_name == 'push'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME $env:INSTALLER "$env:INSTALLER.sha256" `
+            --title "TinyTodo $($env:GITHUB_REF_NAME.TrimStart('v'))" --generate-notes

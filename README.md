@@ -88,14 +88,29 @@ Block Kit, put the code block in `text` too, not only in the blocks.
 
 ## Install on Windows
 
-Run `TinyTodo-Setup-<version>.exe`. It installs for the current user (no admin
-rights needed) and asks for the two Slack tokens. It checks them with Slack and
-stores them in Windows Credential Manager. Leave both fields empty to keep
-tokens that are already stored. Setup can also start TinyTodo at sign-in. The
-uninstaller (Settings → Apps) asks whether to remove the stored tokens too.
+Download `TinyTodo-Setup-<version>.exe` from the
+[latest release](https://github.com/appsvoltaire/TinyTodo/releases/latest) and
+run it. It installs for the current user (no admin rights needed) and asks for
+the two Slack tokens. It checks them with Slack and stores them in Windows
+Credential Manager. Leave both fields empty to keep tokens that are already
+stored. Setup can also start TinyTodo at sign-in.
+
+Installing a newer version over an older one upgrades it in place: TinyTodo is
+closed during setup, and your tokens and settings are kept. The uninstaller
+(Settings → Apps) asks whether to remove the stored tokens too.
+
+The installer isn't code-signed, so Windows SmartScreen may say *Windows
+protected your PC*. Choose **More info**, then **Run anyway**. To check the
+download first, compare its hash with the `.sha256` file next to it in the
+release:
+
+```powershell
+Get-FileHash TinyTodo-Setup-<version>.exe -Algorithm SHA256
+```
 
 To build the installer yourself, you need
-[Inno Setup 6](https://jrsoftware.org/isdl.php). Then run:
+[Inno Setup 6](https://jrsoftware.org/isdl.php) and `cargo-about`
+(`cargo install cargo-about --locked --features cli`). Then run:
 
 ```bash
 powershell -ExecutionPolicy Bypass -File installer/build.ps1
@@ -222,6 +237,21 @@ Debug builds have two helpers:
   assistant's, so the whole loop can be tested with just the app's tokens.
 - `TINYTODO_DEBUG_RECONNECTS=1` asks Slack to rotate the socket every few
   minutes, which exercises reconnection.
+
+### Releasing
+
+Set the new `version` in `Cargo.toml`, commit, then tag that commit and push
+the tag:
+
+```bash
+git tag v0.3.1 && git push origin v0.3.1
+```
+
+The [Release workflow](.github/workflows/release.yml) builds the installer on
+a clean Windows runner and publishes it with its SHA-256 checksum as a GitHub
+release. It stops if the tag doesn't match the version in `Cargo.toml`. To try
+a build without publishing, use *Run workflow* on the Actions tab; the
+installer is attached to that run.
 
 ## License
 
