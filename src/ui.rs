@@ -96,7 +96,6 @@ enum Msg {
     SettingsOpened(window::Id),
     WindowClosed(window::Id),
     Close(window::Id),
-    Resized(window::Id),
     Draft(String),
     Hover(bool),
     /// A click, scroll or key press in a window.
@@ -177,7 +176,7 @@ impl App {
             Msg::PopupOpened(id) => {
                 let activate = self.activate_on_open;
                 let prepare = window::run(id, move |w| {
-                    platform::apply_glass(w, crate::style::RADIUS);
+                    platform::apply_glass(w);
                     if !activate {
                         platform::show_without_activating(w);
                     }
@@ -204,12 +203,6 @@ impl App {
                     return window::close(id);
                 }
                 return self.hide();
-            }
-            Msg::Resized(id) => {
-                // The window's rounded corners have to follow its size.
-                if self.popup == Some(id) && self.fading_since.is_none() {
-                    return window::run(id, |w| platform::apply_glass(w, crate::style::RADIUS)).discard();
-                }
             }
             Msg::Draft(draft) => {
                 self.draft = draft;
@@ -397,7 +390,7 @@ impl App {
         self.fade_generation += 1;
         self.fade = 1.0;
         match (self.fading_since.take(), self.popup) {
-            (Some(_), Some(id)) => window::run(id, |w| platform::apply_glass(w, crate::style::RADIUS)).discard(),
+            (Some(_), Some(id)) => window::run(id, |w| platform::apply_glass(w)).discard(),
             _ => Task::none(),
         }
     }
@@ -575,7 +568,6 @@ impl App {
             Subscription::run(platform::activations).map(|()| Msg::Activate),
             window::close_requests().map(Msg::Close),
             window::close_events().map(Msg::WindowClosed),
-            window::resize_events().map(|(id, _)| Msg::Resized(id)),
             iced::system::theme_changes().map(Msg::ThemeMode),
             event::listen_with(|event, _, id| match event {
                 iced::Event::Keyboard(keyboard::Event::KeyPressed {

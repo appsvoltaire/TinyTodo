@@ -8,33 +8,19 @@ use iced::window::Window;
 /// drawn more opaque to stay readable).
 pub const HAS_BLUR: bool = cfg!(windows);
 
-/// Blurs what's behind the window and rounds its corners to `radius`, so clicks
-/// outside the panel's corners fall through. Call again after resizes.
+/// Blurs what's behind the window.
 ///
-/// The blur always covers the whole window rectangle: on Windows 10 a window
-/// region clips what the app draws, but not the blur. So the window has to be
-/// exactly the size of the panel, or the blur shows around it.
-#[cfg(windows)]
-pub fn apply_glass(window: &dyn Window, radius: f32) {
-    use windows_sys::Win32::Graphics::Gdi::{CreateRoundRectRgn, SetWindowRgn};
-    use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
-    use windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect;
-    let Some(hwnd) = hwnd(window) else { return };
+/// The blur always covers the whole window rectangle, so the window has to be
+/// exactly the size of the panel, or the blur shows around it. A rounded window
+/// region doesn't help: on Windows 10 it clips what the app draws but not the
+/// blur, and it makes Windows paint a classic title bar and frame over the
+/// window whenever it loses focus.
+pub fn apply_glass(window: &dyn Window) {
+    #[cfg(windows)]
     let _ = window_vibrancy::apply_blur(window, Some((0, 0, 0, 0)));
-    // SAFETY: `hwnd` is a live window owned by this process; the region is
-    // handed over to the system by SetWindowRgn.
-    unsafe {
-        let scale = GetDpiForWindow(hwnd) as f32 / 96.0;
-        let mut rect = std::mem::zeroed();
-        GetClientRect(hwnd, &mut rect);
-        let diameter = (2.0 * radius * scale) as i32;
-        let region = CreateRoundRectRgn(0, 0, rect.right + 1, rect.bottom + 1, diameter, diameter);
-        SetWindowRgn(hwnd, region, 1);
-    }
+    #[cfg(not(windows))]
+    let _ = window;
 }
-
-#[cfg(not(windows))]
-pub fn apply_glass(_: &dyn Window, _: f32) {}
 
 /// Drops the background blur, e.g. while the popup fades out.
 pub fn clear_blur(window: &dyn Window) {
