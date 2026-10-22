@@ -15,10 +15,14 @@ use iced::{Center, Color, Element, Fill, Point, Size, Subscription, Task, Theme,
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-const WIDTH: f32 = 400.0;
-/// Transparent margin around the panel so its shadow isn't clipped.
-const GUTTER: f32 = 10.0;
-const SCREEN_MARGIN: f32 = 6.0;
+const PANEL_WIDTH: f32 = 380.0;
+/// Transparent margin around the panel so its shadow isn't clipped. None where
+/// the desktop is blurred: the blur fills the whole window, so it must not
+/// reach past the panel (see `platform::apply_glass`).
+const GUTTER: f32 = if platform::HAS_BLUR { 0.0 } else { 10.0 };
+const WIDTH: f32 = PANEL_WIDTH + 2.0 * GUTTER;
+/// The panel sits this far from the top-right corner of the screen.
+const SCREEN_MARGIN: f32 = 16.0 - GUTTER;
 const CONVERSATION_HEIGHT: f32 = 560.0;
 const MIN_HEIGHT: f32 = 170.0;
 const MAX_POPUP_BODY: f32 = 300.0;
@@ -173,7 +177,7 @@ impl App {
             Msg::PopupOpened(id) => {
                 let activate = self.activate_on_open;
                 let prepare = window::run(id, move |w| {
-                    platform::apply_glass(w, GUTTER, crate::style::RADIUS);
+                    platform::apply_glass(w, crate::style::RADIUS);
                     if !activate {
                         platform::show_without_activating(w);
                     }
@@ -202,9 +206,9 @@ impl App {
                 return self.hide();
             }
             Msg::Resized(id) => {
-                // The rounded blur region has to follow the window's size.
+                // The window's rounded corners have to follow its size.
                 if self.popup == Some(id) && self.fading_since.is_none() {
-                    return window::run(id, |w| platform::apply_glass(w, GUTTER, crate::style::RADIUS)).discard();
+                    return window::run(id, |w| platform::apply_glass(w, crate::style::RADIUS)).discard();
                 }
             }
             Msg::Draft(draft) => {
@@ -393,9 +397,7 @@ impl App {
         self.fade_generation += 1;
         self.fade = 1.0;
         match (self.fading_since.take(), self.popup) {
-            (Some(_), Some(id)) => {
-                window::run(id, |w| platform::apply_glass(w, GUTTER, crate::style::RADIUS)).discard()
-            }
+            (Some(_), Some(id)) => window::run(id, |w| platform::apply_glass(w, crate::style::RADIUS)).discard(),
             _ => Task::none(),
         }
     }

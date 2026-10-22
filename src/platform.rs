@@ -8,10 +8,14 @@ use iced::window::Window;
 /// drawn more opaque to stay readable).
 pub const HAS_BLUR: bool = cfg!(windows);
 
-/// Blurs what's behind the window and clips it to the rounded panel, which is
-/// inset by `inset` logical pixels and has corner `radius`. Call again after resizes.
+/// Blurs what's behind the window and rounds its corners to `radius`, so clicks
+/// outside the panel's corners fall through. Call again after resizes.
+///
+/// The blur always covers the whole window rectangle: on Windows 10 a window
+/// region clips what the app draws, but not the blur. So the window has to be
+/// exactly the size of the panel, or the blur shows around it.
 #[cfg(windows)]
-pub fn apply_glass(window: &dyn Window, inset: f32, radius: f32) {
+pub fn apply_glass(window: &dyn Window, radius: f32) {
     use windows_sys::Win32::Graphics::Gdi::{CreateRoundRectRgn, SetWindowRgn};
     use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
     use windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect;
@@ -23,15 +27,14 @@ pub fn apply_glass(window: &dyn Window, inset: f32, radius: f32) {
         let scale = GetDpiForWindow(hwnd) as f32 / 96.0;
         let mut rect = std::mem::zeroed();
         GetClientRect(hwnd, &mut rect);
-        let (inset, diameter) = ((inset * scale) as i32, (2.0 * radius * scale) as i32);
-        let region =
-            CreateRoundRectRgn(inset, inset, rect.right - inset + 1, rect.bottom - inset + 1, diameter, diameter);
+        let diameter = (2.0 * radius * scale) as i32;
+        let region = CreateRoundRectRgn(0, 0, rect.right + 1, rect.bottom + 1, diameter, diameter);
         SetWindowRgn(hwnd, region, 1);
     }
 }
 
 #[cfg(not(windows))]
-pub fn apply_glass(_: &dyn Window, _: f32, _: f32) {}
+pub fn apply_glass(_: &dyn Window, _: f32) {}
 
 /// Drops the background blur, e.g. while the popup fades out.
 pub fn clear_blur(window: &dyn Window) {
@@ -80,7 +83,7 @@ pub fn prepare_env() {
     }
 }
 
-/// The notification sound: `assets/droplet.mp3`, converted to WAV because
+/// The notification sound: a Pixabay MP3, converted to WAV because
 /// that's what every OS sound API plays without extra codecs.
 const DROPLET: &[u8] = include_bytes!("../assets/droplet.wav");
 

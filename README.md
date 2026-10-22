@@ -7,7 +7,7 @@ channel. When the assistant posts, a small glass popup appears in the top-right
 corner; type a reply and press Enter, and it goes back to the channel.
 
 <p align="center">
-  <img src="docs/popup.png" width="414" alt="A TinyTodo popup in the top-right corner: the assistant asks &quot;want me to book the 2pm slot with Sam?&quot;, with a reply field and History, Dismiss and Reply buttons">
+  <img src="docs/popup.png" width="428" alt="A frosted-glass TinyTodo popup in the top-right corner: the assistant says &quot;Your 2pm with Sam is confirmed. Want me to add a reminder 15 minutes before?&quot;, with a reply field and History, Dismiss and Reply buttons">
 </p>
 
 TinyTodo keeps no tasks, history or memory of its own. The assistant owns the
@@ -209,11 +209,11 @@ Slack, notification policy and UI are separate layers, each testable on its own:
 The installer icon is generated from the tray artwork:
 `cargo test -- --ignored write_installer_icon`.
 
-The notification sound is `assets/droplet.mp3`, from Pixabay under the
-[Pixabay Content License](https://pixabay.com/service/license-summary/) (free
-to use, no attribution required). The app embeds `assets/droplet.wav`, a
-straight conversion of it to 16-bit PCM WAV. WAV is what Windows' `PlaySound`
-and every Linux player can play without extra codecs.
+The notification sound is `assets/droplet.wav`, a droplet sound from Pixabay
+under the [Pixabay Content License](https://pixabay.com/service/license-summary/)
+(free to use, no attribution required), converted from MP3 to 16-bit PCM WAV.
+WAV is what Windows' `PlaySound` and every Linux player can play without extra
+codecs.
 `cargo test -- --ignored plays_droplet` plays it once on Windows.
 
 Debug builds have two helpers:
