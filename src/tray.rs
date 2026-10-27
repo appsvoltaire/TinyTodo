@@ -127,4 +127,18 @@ mod tests {
         header.extend(images);
         std::fs::write(concat!(env!("CARGO_MANIFEST_DIR"), "/installer/tinytodo.ico"), header).unwrap();
     }
+
+    /// Regenerates `installer/tinytodo.png` (the Linux menu icon):
+    /// `cargo test -- --ignored write_linux_icon`
+    #[test]
+    #[ignore]
+    fn write_linux_icon() {
+        let size = 256;
+        let file = std::fs::File::create(concat!(env!("CARGO_MANIFEST_DIR"), "/installer/tinytodo.png")).unwrap();
+        let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), size, size);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_compression(png::Compression::High);
+        encoder.write_header().unwrap().write_image_data(&icon_rgba(size)).unwrap();
+    }
 }

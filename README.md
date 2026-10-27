@@ -118,6 +118,25 @@ powershell -ExecutionPolicy Bypass -File installer/build.ps1
 
 The installer is written to `target\installer\`.
 
+## Install on Linux
+
+From a clone of this repository, run:
+
+```bash
+installer/install-linux.sh
+```
+
+It builds TinyTodo (see [Build](#2-build) for what that needs) and installs it
+for the current user, no root needed: the app goes to `~/.local/bin/tinytodo`,
+with a menu entry and icon under `~/.local/share`. Like the Windows installer,
+it asks for the two Slack tokens, checks them with Slack and stores them in the
+Secret Service (KWallet on KDE, GNOME Keyring on GNOME). Leave both empty to
+keep tokens that are already stored. It can also start TinyTodo at sign-in.
+
+Running it again upgrades in place: a running TinyTodo is closed first, and
+your tokens and settings are kept. `installer/install-linux.sh --uninstall`
+removes it and asks whether to remove the stored tokens too.
+
 ## Setup from source
 
 ### 1. Slack app
@@ -219,10 +238,10 @@ Slack, notification policy and UI are separate layers, each testable on its own:
 | `src/config.rs` | Config file, keyring tokens, cursor file |
 | `src/tray.rs` | Tray icon and menu; the app icon artwork |
 | `src/platform.rs` | Per-OS window tweaks, sound, sign-in launch, single instance |
-| `installer/` | Inno Setup script, build script, icon |
+| `installer/` | Windows (Inno Setup) and Linux install scripts, icons |
 
-The installer icon is generated from the tray artwork:
-`cargo test -- --ignored write_installer_icon`.
+The installer icons are generated from the tray artwork:
+`cargo test -- --ignored write_installer_icon write_linux_icon`.
 
 The notification sound is `assets/droplet.wav`, a droplet sound from Pixabay
 under the [Pixabay Content License](https://pixabay.com/service/license-summary/)
