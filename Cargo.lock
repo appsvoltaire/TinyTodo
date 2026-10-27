@@ -4106,6 +4106,7 @@ dependencies = [
  "futures",
  "iced",
  "keyring",
+ "png",
  "raw-window-handle",
  "reqwest",
  "serde",
