@@ -424,6 +424,11 @@ impl App {
             position: window::Position::Centered,
             resizable: false,
             minimizable: false,
+            // iced picks one surface alpha mode for every window, from the first one opened
+            // (usually the transparent popup). On X11 an opaque window gets a visual that only
+            // supports Opaque, so configuring it with PreMultiplied panics. The view paints an
+            // opaque background, so this looks the same.
+            transparent: true,
             exit_on_close_request: false,
             icon: window::icon::from_rgba(tray::icon_rgba(64), 64, 64).ok(),
             ..Default::default()
