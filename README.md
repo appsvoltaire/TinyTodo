@@ -40,7 +40,7 @@ twice.
 - **Tray menu**: *Open conversation*, *Settings…*, *Quit TinyTodo*. The tooltip
   shows when the app is offline.
 - **Settings**: popups on/off, fade delay, notification sound (a soft droplet), glass
-  transparency, launch at sign-in, and a test notification to preview changes.
+  transparency, UI size, launch at sign-in, and a test notification to preview changes.
 - Messages that arrive while TinyTodo is closed or offline pop up once it
   reconnects. On the very first run it starts from the newest message instead
   of replaying the channel.
@@ -196,6 +196,7 @@ sound = false               # play the system notification sound
 
 [appearance]
 transparency = 0.40         # 0.0 (solid) to 0.80
+scale = 1.00                # size of text and controls, 0.75 to 2.50
 ```
 
 Only one TinyTodo runs at a time. Launching it again opens the conversation in

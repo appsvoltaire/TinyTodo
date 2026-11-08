@@ -31,12 +31,14 @@ const MESSAGE_GAP: f32 = 20.0;
 const MAX_MESSAGES: usize = 10;
 const FADE_DURATION: Duration = Duration::from_millis(700);
 const INPUT: &str = "reply";
+const SETTINGS_SIZE: Size = Size::new(400.0, 520.0);
 
 pub fn run(cfg: Config, feed: Result<Feed, String>) -> iced::Result {
     iced::daemon(move || App::boot(cfg.clone(), feed.clone()), App::update, App::view)
         .title(App::title)
         .theme(|app: &App, _| app.theme.clone())
         .subscription(App::subscription)
+        .scale_factor(|app: &App, _| app.scale)
         .style(|_, _| iced::theme::Style { background_color: Color::TRANSPARENT, text_color: Color::BLACK })
         .run()
 }
@@ -83,6 +85,9 @@ struct App {
     theme: Theme,
     launch_at_sign_in: bool,
     settings_error: Option<String>,
+    /// The UI scale in effect. The slider edits `cfg.appearance.scale`; this follows on release
+    /// so the windows don't resize under the pointer mid-drag.
+    scale: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -116,6 +121,8 @@ enum Msg {
     SetFadeSeconds(f32),
     SetSound(bool),
     SetTransparency(f32),
+    SetScale(f32),
+    ApplyScale,
     SetLaunchAtSignIn(bool),
     SaveSettings,
     TestNotification,
@@ -129,6 +136,7 @@ impl App {
             Err(e) => (None, Some(e)),
         };
         let mut app = Self {
+            scale: cfg.appearance.scale,
             cfg,
             feed,
             session: None,
@@ -294,6 +302,11 @@ impl App {
                 }
             }
             Msg::SetTransparency(t) => self.cfg.appearance.transparency = t,
+            Msg::SetScale(scale) => self.cfg.appearance.scale = scale,
+            Msg::ApplyScale => {
+                self.save_settings();
+                return self.apply_scale();
+            }
             Msg::SaveSettings => self.save_settings(),
             Msg::SetLaunchAtSignIn(on) => match platform::set_launch_at_sign_in(on) {
                 Ok(()) => self.launch_at_sign_in = on,
@@ -420,7 +433,7 @@ impl App {
         self.launch_at_sign_in = platform::launches_at_sign_in();
         self.settings_error = None;
         let (id, open) = window::open(window::Settings {
-            size: Size::new(400.0, 450.0),
+            size: SETTINGS_SIZE,
             position: window::Position::Centered,
             resizable: false,
             minimizable: false,
@@ -435,6 +448,25 @@ impl App {
         });
         self.settings = Some(id);
         open.map(Msg::SettingsOpened)
+    }
+
+    /// Window sizes are in scaled units, but iced only applies them when a window opens, so
+    /// open windows are resized to match the new scale.
+    fn apply_scale(&mut self) -> Task<Msg> {
+        if self.scale == self.cfg.appearance.scale {
+            return Task::none();
+        }
+        self.scale = self.cfg.appearance.scale;
+        let settings = self.settings.map(|id| window::resize(id, SETTINGS_SIZE));
+        let popup = self.popup.map(|id| {
+            self.user_sized = false;
+            Task::batch([
+                window::set_min_size(id, Some(Size::new(WIDTH, MIN_HEIGHT))),
+                window::set_max_size(id, Some(Size::new(WIDTH, 2000.0))),
+                window::resize(id, Size::new(WIDTH, self.height())),
+            ])
+        });
+        Task::batch(settings.into_iter().chain(popup))
     }
 
     fn save_settings(&mut self) {
@@ -750,11 +782,16 @@ impl App {
         ]
         .spacing(12);
         let transparency = self.cfg.appearance.transparency;
+        let scale = self.cfg.appearance.scale;
         let appearance = column![
             labelled("Transparency", format!("{:.0}%", transparency * 100.0)),
             slider(0.0..=config::MAX_TRANSPARENCY, transparency, Msg::SetTransparency)
                 .step(0.01_f32)
                 .on_release(Msg::SaveSettings),
+            labelled("Size", format!("{:.0}%", scale * 100.0)),
+            slider(config::MIN_SCALE..=config::MAX_SCALE, scale, Msg::SetScale)
+                .step(0.05_f32)
+                .on_release(Msg::ApplyScale),
         ]
         .spacing(12);
         let system = toggler(self.launch_at_sign_in)

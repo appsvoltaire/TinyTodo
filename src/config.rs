@@ -28,6 +28,8 @@ pub struct Notifications {
 #[serde(default)]
 pub struct Appearance {
     pub transparency: f32,
+    /// Multiplies the size of everything on screen, on top of the desktop's own scaling.
+    pub scale: f32,
 }
 
 impl Default for Config {
@@ -50,17 +52,22 @@ impl Default for Notifications {
 impl Default for Appearance {
     fn default() -> Self {
         // Without a blurred backdrop the panel needs to be more solid to stay readable.
-        Self { transparency: if crate::platform::HAS_BLUR { 0.4 } else { 0.15 } }
+        Self { transparency: if crate::platform::HAS_BLUR { 0.4 } else { 0.15 }, scale: 1.0 }
     }
 }
 
 pub const MAX_TRANSPARENCY: f32 = 0.8;
+pub const MIN_SCALE: f32 = 0.75;
+pub const MAX_SCALE: f32 = 2.5;
 pub const MAX_FADE_SECONDS: u64 = 60;
 
 impl Config {
     pub fn parse(text: &str) -> Result<Self, String> {
         let mut cfg: Self = toml::from_str(text).map_err(|e| format!("invalid config: {e}"))?;
         cfg.appearance.transparency = cfg.appearance.transparency.clamp(0.0, MAX_TRANSPARENCY);
+        // NaN isn't caught by clamp and would make every window zero-sized.
+        cfg.appearance.scale =
+            if cfg.appearance.scale.is_finite() { cfg.appearance.scale.clamp(MIN_SCALE, MAX_SCALE) } else { 1.0 };
         Ok(cfg)
     }
 
@@ -116,8 +123,11 @@ sound = {}
 [appearance]
 # How see-through the popup glass is, from 0.0 (solid) to {MAX_TRANSPARENCY}.
 transparency = {:.2}
+# Size of text and controls, from {MIN_SCALE} to {MAX_SCALE}. Raise it if TinyTodo looks
+# too small (common on X11 desktops that don't report their scaling).
+scale = {:.2}
 "#,
-            n.enabled, n.fade_after_seconds, n.sound, self.appearance.transparency
+            n.enabled, n.fade_after_seconds, n.sound, self.appearance.transparency, self.appearance.scale
         )
     }
 }
@@ -226,7 +236,7 @@ mod tests {
             channel: "a \"quoted\" name".into(),
             ignore_user_ids: vec!["U1".into(), "U2".into()],
             notifications: Notifications { enabled: false, fade_after_seconds: 42, sound: true },
-            appearance: Appearance { transparency: 0.25 },
+            appearance: Appearance { transparency: 0.25, scale: 1.5 },
         };
         assert_eq!(Config::parse(&cfg.render()).unwrap(), cfg);
     }
@@ -256,6 +266,15 @@ transparency = 3.0
         )
         .unwrap();
         assert_eq!(cfg.appearance.transparency, MAX_TRANSPARENCY);
+    }
+
+    #[test]
+    fn scale_is_clamped() {
+        let scale = |v: &str| Config::parse(&format!("[appearance]\nscale = {v}\n")).unwrap().appearance.scale;
+        assert_eq!(scale("10.0"), MAX_SCALE);
+        assert_eq!(scale("0.1"), MIN_SCALE);
+        assert_eq!(scale("nan"), 1.0);
+        assert_eq!(scale("1.25"), 1.25);
     }
 
     #[test]
